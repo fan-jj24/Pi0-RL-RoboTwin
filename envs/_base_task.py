@@ -1425,7 +1425,7 @@ class Base_Task(gym.Env):
 
         save_freq = self.save_freq if save_freq == -1 else save_freq
         if save_freq != None:
-            self._take_picture()
+            self.()
 
         max_control_len = 0
 

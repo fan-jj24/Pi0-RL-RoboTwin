@@ -66,6 +66,9 @@ class Base_Task(gym.Env):
         self.render_freq = kwags.get("render_freq", 10)
         self.data_type = kwags.get("data_type", None)
         self.save_data = kwags.get("save_data", False)
+        self.save_demo = kwags.get("save_data", False)
+        if self.save_demo:
+            self.demo_traj, self.obs_dict, self.actions_traj, self.demo_step = [], {}, [], 0
         self.dual_arm = kwags.get("dual_arm", True)
         self.eval_mode = kwags.get("eval_mode", False)
 
@@ -536,8 +539,35 @@ class Base_Task(gym.Env):
         save_img(save_path, rgb[camera_name]['rgb'])
 
     def _take_picture(self):  # save data
-        if not self.save_data:
+        if not self.save_data and not self.save_demo:
             return
+        
+        if self.save_demo:
+            pkl_dic = self.get_obs()
+            if self.demo_step == 0:
+                self.obs_dict = {
+                    "state": pkl_dic["joint_action"]["vector"],
+                    "image": {
+                    "base_0_rgb": pkl_dic["observation"]["head_camera"]["rgb"],
+                    "left_wrist_0_rgb": pkl_dic["observation"]["left_camera"]["rgb"],
+                    "right_wrist_0_rgb": pkl_dic["observation"]["right_camera"]["rgb"],
+                    },
+                    "image_mask": {
+                        "base_0_rgb":True,
+                        "left_wrist_0_rgb": True,
+                        "right_wrist_0_rgb": True,
+                    },
+                }
+                self.demo_step += 1
+            elif self.demo_step <= 50:
+                self.actions_traj.append(pkl_dic["joint_action"]["vector"])
+                self.demo_step += 1
+            else:
+                self.demo_traj.append((self.obs_dict, self.actions_traj))
+                self.obs_dict, self.actions_traj, self.demo_step = {}, [], 0
+
+            return
+
 
         print("saving: episode = ", self.ep_num, " index = ", self.FRAME_IDX, end="\r")
 
@@ -1425,7 +1455,7 @@ class Base_Task(gym.Env):
 
         save_freq = self.save_freq if save_freq == -1 else save_freq
         if save_freq != None:
-            self.()
+            self._take_picture()
 
         max_control_len = 0
 

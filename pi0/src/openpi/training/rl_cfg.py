@@ -1,5 +1,4 @@
 from config import TrainConfig, LeRobotAlohaDataConfig, DataConfig
-import openpi.transforms as _transforms
 import openpi.models.pi0 as pi0
 import weight_loaders
 import importlib
@@ -101,7 +100,7 @@ def class_decorator(task_name):
 
 class RoboTwinEnv():
     def __init__(self, norm_stats = None):
-        self.task_name = ["satck_blocks_two", "stack_blocks_three", "stack_blows_two", "stack_bowls_three",]
+        self.task_name = ["stack_blocks_two", "stack_blocks_three", "stack_bowls_two", "stack_bowls_three",]
         task_config = "demo_randomized"
         config_path = f"./task_config/{task_config}.yml"
         with open(config_path, "r", encoding="utf-8") as f:
@@ -152,13 +151,16 @@ class RoboTwinEnv():
         self.tokenizer = tokenizer.PaligemmaTokenizer(48)
         
 
-    def reset(self, now_seed = random.randint(1000, 10000), max_seed = 100000):
-        task_name = np.random.choice(self.task_name)
+    def reset(self, task_name = None, mode = None, now_seed = random.randint(2000, 10000), max_seed = 100000):
+        if task_name is None:
+            task_name = np.random.choice(self.task_name)
         task = class_decorator(task_name)
         self.args['task_name'] = task_name
+        self.args["save_demo"] = False
+        self.args["save_freq"] = 15
         while True:
             try:
-                task.setup_demo(now_ep_num=0, seed=now_seed, is_test=True, **self.args)
+                task.setup_demo(now_ep_num=0, seed=now_seed, is_test=False, **self.args)
                 episode_info = task.play_once()
                 task.close_env()
             except UnStableError as e:
@@ -174,19 +176,24 @@ class RoboTwinEnv():
                 continue
             else:
                 self.task = task
-                self.task.setup_demo(now_ep_num=0, seed=now_seed, is_test=True, **self.args)
+                if mode == "demo":
+                    self.args["save_demo"] = True
+                    self.args["save_freq"] = 2
+                elif mode is not None:
+                    raise ValueError("mode must be 'demo' or NOT set")
+                self.task.setup_demo(now_ep_num=0, seed=now_seed, is_test=False, **self.args)
                 episode_info_list = [episode_info["info"]]
                 results = generate_episode_descriptions(self.args["task_name"], episode_info_list, max_seed)
                 instruction = np.random.choice(results[0]["unseen"])
                 self.task.set_instruction(instruction)
                 self.instruction = instruction
-                observation = self.get_observation()
+                observation = self.input(self.get_observation())
 
-                return observation, task_name
+                return observation, task_name, now_seed
         
     def step(self, actions):
         actions = transforms.pad_to_dim(actions, 32)
-        observation = self.get_observation()
+        observation = self.input(self.get_observation())
         state = observation["state"]
         output = self.output_transform({
             "state": state,
@@ -199,7 +206,7 @@ class RoboTwinEnv():
         for action in actions:
             self.task.take_action(action)
 
-        next_observation = self.get_observation()
+        next_observation = self.input(self.get_observation())
         done = True if self.task.eval_success or self.task.take_action_cnt >= self.task.step_lim else False
         reward = 1.0 if self.task.eval_success else 0.0
         if done:
@@ -236,7 +243,13 @@ class RoboTwinEnv():
             "tokenized_prompt": tokens,
             "tokenized_prompt_mask": token_masks,
         }
+        return observation
+
+
+    def input(self, observation):
         observation["state"] = transforms.pad_to_dim(observation["state"], 32)
+        if "actions" in observation:
+            observation["actions"] = transforms.pad_to_dim(observation["actions"], 32)
         observation = self.input_transform(observation)
         observation["state"] = np.asarray(observation["state"][:14])  # only keep the first 14 dims
 

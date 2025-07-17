@@ -138,7 +138,7 @@ def actor(agent, data_store, intvn_data_store, sampling_rng):
                 actions=actions,
                 next_observations=next_obs,
                 rewards=reward,
-                masks=1.0 - done,
+                #masks=1.0 - done,
                 dones=done,
             )
             data_store.insert(transition)

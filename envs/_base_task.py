@@ -66,7 +66,7 @@ class Base_Task(gym.Env):
         self.render_freq = kwags.get("render_freq", 10)
         self.data_type = kwags.get("data_type", None)
         self.save_data = kwags.get("save_data", False)
-        self.save_demo = kwags.get("save_data", False)
+        self.save_demo = kwags.get("save_demo", False)
         if self.save_demo:
             self.demo_traj, self.obs_dict, self.actions_traj, self.demo_step = [], {}, [], 0
         self.dual_arm = kwags.get("dual_arm", True)
@@ -278,7 +278,7 @@ class Base_Task(gym.Env):
 
         if self.random_background:
             texture_type = "seen" if not self.eval_mode else "unseen"
-            directory_path = f"./assets/background_texture/{texture_type}"
+            directory_path = f"/home/anker/robotwin/Pi0-RL-RoboTwin/assets/background_texture/{texture_type}"
             file_count = len(
                 [name for name in os.listdir(directory_path) if os.path.isfile(os.path.join(directory_path, name))])
 
@@ -538,13 +538,51 @@ class Base_Task(gym.Env):
         rgb = self.cameras.get_rgb()
         save_img(save_path, rgb[camera_name]['rgb'])
 
+    def get_demo_image(self):
+        self._update_render()
+        self.cameras.update_picture()
+        pkl_dic = {
+            "observation": {},
+            "joint_action": {},
+        }
+
+        pkl_dic["observation"] = self.cameras.get_config()
+        # rgb
+        if self.data_type.get("rgb", False):
+            rgb = self.cameras.get_rgb()
+            for camera_name in rgb.keys():
+                pkl_dic["observation"][camera_name].update(rgb[camera_name])
+
+        # qpos
+        if self.data_type.get("qpos", False):
+
+            left_jointstate = self.robot.get_left_arm_jointState()
+            right_jointstate = self.robot.get_right_arm_jointState()
+            pkl_dic["joint_action"]["vector"] = np.array(left_jointstate + right_jointstate)
+
+        return pkl_dic
+    
+    def get_demo_state(self):
+        self._update_render()
+        pkl_dic = {
+            "joint_action": {},
+        }
+        # qpos
+        if self.data_type.get("qpos", False):
+            left_jointstate = self.robot.get_left_arm_jointState()
+            right_jointstate = self.robot.get_right_arm_jointState()
+            pkl_dic["joint_action"]["vector"] = np.array(left_jointstate + right_jointstate)
+
+        return pkl_dic
+
+
     def _take_picture(self):  # save data
         if not self.save_data and not self.save_demo:
             return
         
         if self.save_demo:
-            pkl_dic = self.get_obs()
             if self.demo_step == 0:
+                pkl_dic = self.get_demo_image()
                 self.obs_dict = {
                     "state": pkl_dic["joint_action"]["vector"],
                     "image": {
@@ -560,10 +598,11 @@ class Base_Task(gym.Env):
                 }
                 self.demo_step += 1
             elif self.demo_step <= 50:
+                pkl_dic = self.get_demo_state()
                 self.actions_traj.append(pkl_dic["joint_action"]["vector"])
                 self.demo_step += 1
             else:
-                self.demo_traj.append((self.obs_dict, self.actions_traj))
+                self.demo_traj.append((self.obs_dict, np.array(self.actions_traj)))
                 self.obs_dict, self.actions_traj, self.demo_step = {}, [], 0
 
             return

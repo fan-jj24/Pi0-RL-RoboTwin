@@ -215,7 +215,7 @@ class ObjectViewer(BaseViewer):
             self.viewer.close()
 
     def load_actor(self, pose, inherit_config=None, inherit_type: Literal['force', 'advice'] = 'advice'):
-        modeldir = Path("assets/objects") / self.modelname
+        modeldir = Path("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects") / self.modelname
         modelid = '' if self.modelid is None else self.modelid
         self.config_path = modeldir / f"model_data{modelid}.json"
 
@@ -615,7 +615,7 @@ class URDFViewer(BaseViewer):
             self.viewer.close()
 
     def load_actor(self, pose, inherit_config=None, inherit_type: Literal['force', 'advice'] = 'advice'):
-        modeldir = Path("assets/objects") / self.modelname / str(self.modelid)
+        modeldir = Path("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects") / self.modelname / str(self.modelid)
         self.config_path = modeldir / f"model_data.json"
 
         if self.config_path.exists():
@@ -1029,7 +1029,7 @@ class URDFViewer(BaseViewer):
             pass
 
 def auto_loader(model_name: str):
-    model_dir = Path("./assets/objects/") / model_name
+    model_dir = Path("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects/") / model_name
     collision = model_dir / "collision"
     visual    = model_dir / "visual"
 

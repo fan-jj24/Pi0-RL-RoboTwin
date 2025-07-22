@@ -14,13 +14,13 @@ def get_all_cluttered_objects():
     cluttered_objects_name = []
 
     # load from cluttered_objects
-    cluttered_objects_config = json.load(open(Path("./assets/objects/objaverse/list.json"), "r", encoding="utf-8"))
+    cluttered_objects_config = json.load(open(Path("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects/objaverse/list.json"), "r", encoding="utf-8"))
     cluttered_objects_name += cluttered_objects_config["item_names"]
     for model_name, model_ids in cluttered_objects_config["list_of_items"].items():
         cluttered_objects_info[model_name] = {
             "ids": model_ids,
             "type": "urdf",
-            "root": f"objects/objaverse/{model_name}",
+            "root": f"/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects/objaverse/{model_name}",
         }
         params = {}
         for model_id in model_ids:
@@ -33,7 +33,7 @@ def get_all_cluttered_objects():
         cluttered_objects_info[model_name]["params"] = params
 
     # load from objects
-    objects_dir = Path("./assets/objects")
+    objects_dir = Path("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects")
     for model_dir in objects_dir.iterdir():
         if not model_dir.is_dir():
             continue
@@ -81,7 +81,7 @@ def get_all_cluttered_objects():
             "params": params,
         }
 
-    same_obj = json.load(open(Path("./assets/objects/same.json"), "r", encoding="utf-8"))
+    same_obj = json.load(open(Path("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects/same.json"), "r", encoding="utf-8"))
     cluttered_objects_name = list(cluttered_objects_name)
     cluttered_objects_name.sort()
     return cluttered_objects_info, cluttered_objects_name, same_obj
@@ -264,7 +264,7 @@ def rand_create_cluttered_actor(
 
 def create_cluttered_urdf_obj(scene, pose: sapien.Pose, modelname: str, scale=1.0, fix_root_link=True) -> Actor:
     scene, pose = preprocess(scene, pose)
-    modeldir = Path("assets") / modelname
+    modeldir = Path("/home/anker/robotwin/Pi0-RL-RoboTwin/assets") / modelname
 
     loader: sapien.URDFLoader = scene.create_urdf_loader()
     loader.scale = scale

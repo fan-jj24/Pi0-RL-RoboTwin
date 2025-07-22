@@ -87,7 +87,7 @@ if __name__ == "__main__":
 
     total_conversions = 0
 
-    assets_path = "../assets/objects"
+    assets_path = "./home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects"
     # Process each object directory in assets/objects
     for obj_dir in os.listdir(assets_path):
         obj_path = os.path.join(assets_path, obj_dir)

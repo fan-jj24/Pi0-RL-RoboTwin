@@ -24,9 +24,9 @@ def main():
     assets_path = os.getcwd()
     print_color(f"Current path: {assets_path}", BLUE)
 
-    # Check ./assets/embodiments
+    # Check /home/anker/robotwin/Pi0-RL-RoboTwin/assets/embodiments
     if not os.path.isdir(os.path.join(assets_path, 'assets', 'embodiments')):
-        print_color("Warning: ./assets/embodiments directory not found", YELLOW)
+        print_color("Warning: /home/anker/robotwin/Pi0-RL-RoboTwin/assets/embodiments directory not found", YELLOW)
         parent = os.path.abspath(os.path.join(assets_path, '..'))
         if os.path.isdir(os.path.join(parent, 'assets', 'embodiments')):
             print("Found assets/embodiments in parent directory, switching...")

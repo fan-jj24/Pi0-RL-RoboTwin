@@ -183,6 +183,8 @@ class DynamicNextObsReplayBuffer(ReplayBuffer):
             "rewards": np.empty((capacity,), dtype=np.float32),
             "dones": np.empty((capacity,), dtype=bool),
         }
+        self.observation_space = observation_space
+
         super().__init__(observation_space, action_space, capacity)
         self.dataset_dict = dataset_dict
         self._last_next_obs = None  # 保存最新传入的 next_obs
@@ -237,6 +239,8 @@ class DynamicNextObsReplayBuffer(ReplayBuffer):
 
         # 从原始数据中采样
         batch = {}
+        batch["next_actions"] = self.dataset_dict["actions"][(indx + 1) % self._capacity]
+
         for k in keys:
             if isinstance(self.dataset_dict[k], dict):
                 batch[k] = _sample(self.dataset_dict[k], indx)

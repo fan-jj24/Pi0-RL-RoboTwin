@@ -3,7 +3,8 @@ import flax
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-default_init = nn.initializers.xavier_uniform()
+import pdb
+default_init = nn.initializers.xavier_uniform
 
 class EncodingWrapper(nn.Module):
     """
@@ -24,14 +25,13 @@ class EncodingWrapper(nn.Module):
     def __call__(
         self,
         observations,
-        train=True,
         stop_gradient=False,
     ) -> jnp.ndarray:
         # encode images with encoder
         encoded = []
         for image_key in self.image_keys:
-            image = observations['images'][image_key]
-            image = self.encoder[image_key](image, train=train) #[B, N, D]
+            image = observations['image'][image_key]
+            image = self.encoder[image_key](image) #[B, N, D]
             if stop_gradient:
                 image = jax.lax.stop_gradient(image)
             encoded.append(image)
@@ -52,17 +52,17 @@ class EncodingWrapper(nn.Module):
                 obs_global = jnp.mean(obs_tokens, axis=1, keepdims=True)
                 combined = jnp.concatenate([obs_global, state], axis=-1) #[B, 1, D + D]
                 combined = nn.Dense(obs_tokens.shape[-1], kernel_init=default_init())(combined) #[B, 1, D]
+                combined = nn.gelu(combined)
             else:
                 combined = state
             
             obs_tokens = jnp.concatenate([obs_tokens, combined], axis=1) # [B, N + 1, D]
-                
         return obs_tokens # [B, N + 1, D]
 
 class PositionalEncoding(nn.Module):
     """简单的位置编码层"""
     max_len: int = 48
-    embed_dim: int = 128
+    embed_dim: int = 256
 
     @nn.compact
     def __call__(self, x):
@@ -77,15 +77,14 @@ class TransformerBlock(nn.Module):
 
     @nn.compact
     def __call__(self, x, mask=None, train=False):
-        residual = x
         x = nn.LayerNorm()(x)
-
+        residual = x
         # Multi-head Self-Attention
         attn = nn.MultiHeadDotProductAttention(
             num_heads=self.num_heads,
             kernel_init=default_init()
         )
-        x = attn(query=x, key=x, value=x, mask=mask)
+        x = attn(x, x, x, mask=mask)
         x = nn.Dropout(rate=self.dropout_rate)(x, deterministic=not train)
         x = residual + x
         
@@ -106,9 +105,9 @@ class SmallTransformerTextEncoder(nn.Module):
     输入: token_ids (integers) [B, L]
     输出: [B, D] 的全局表示
     """
-    vocab_size: int = 30522  # BERT tokenizer 默认大小
-    embed_dim: int = 128
-    num_layers: int = 3
+    vocab_size: int = 257152  # PaligemmaTokenizer 默认大小
+    embed_dim: int = 256
+    num_layers: int = 1
     num_heads: int = 4
     max_seq_length: int = 48
     dropout_rate: float = 0.1
@@ -129,7 +128,6 @@ class SmallTransformerTextEncoder(nn.Module):
             features=self.embed_dim,
             embedding_init=default_init()
         )(input_ids)
-
         # Positional Encoding
         if self.use_positional_encoding:
             token_emb =self.pos_encoder(token_emb)
@@ -137,7 +135,6 @@ class SmallTransformerTextEncoder(nn.Module):
                 token_emb = jax.lax.stop_gradient(token_emb)
 
         token_emb = nn.Dropout(rate=self.dropout_rate)(token_emb, deterministic=not train)
-
         # Add CLS token
         if self.pooling == "cls":
             cls_token = self.param('cls_token', 
@@ -157,6 +154,7 @@ class SmallTransformerTextEncoder(nn.Module):
             attention_mask = jnp.array(attention_mask, dtype=bool)
         else:
             attention_mask = None
+
         
             
         # Transformer Blocks
@@ -169,6 +167,7 @@ class SmallTransformerTextEncoder(nn.Module):
         
         # Final Pooling
         if self.pooling == "cls":
+            
             return x[:, 0, :]
         elif self.pooling == "mean":
             if mask is not None:
@@ -188,7 +187,7 @@ class SmallTransformerActionEncoder(nn.Module):
     输入: actions (float) [B, L, 14]
     输出: [B, L, D] 的中间表示
     """
-    embed_dim: int = 128
+    embed_dim: int = 256
     num_layers: int = 3
     num_heads: int = 4
     dropout_rate: float = 0.1
@@ -196,7 +195,7 @@ class SmallTransformerActionEncoder(nn.Module):
     trainable_positional_encoding: bool = True
     def setup(self):
         if self.use_positional_encoding:
-            self.pos_encoder = PositionalEncoding(max_len=48, embed_dim=self.embed_dim)
+            self.pos_encoder = PositionalEncoding(max_len=50, embed_dim=self.embed_dim)
 
     @nn.compact
     def __call__(self, actions, train=False):

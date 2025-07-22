@@ -15,15 +15,15 @@ from serl_launcher.networks.actor_critic_nets import ensemblize
 from serl_launcher.utils.train_utils import _unpack
 from serl_launcher.networks.cross_att import CrossAttentiveCritic
 from serl_launcher.vision.resnet_v1 import resnetv1_configs
-from openpi.training.rl_cfg import create_pi0_base_aloha_rl_lora_config
-from openpi.models import model as _model
+from pi0.src.openpi.training.rl_cfg import create_pi0_base_aloha_rl_lora_config
+from pi0.src.openpi.models import model
 
 def create_policy():
     config = create_pi0_base_aloha_rl_lora_config()
     rng = jax.random.key(config.seed)
     _, model_rng = jax.random.split(rng)
-    model = config.model.create(model_rng)
-    return model
+    policy = config.model.create(model_rng)
+    return policy
 
 
 class TD3AgentHybridDualArm(flax.struct.PyTreeNode):
@@ -87,7 +87,7 @@ class TD3AgentHybridDualArm(flax.struct.PyTreeNode):
         params = grad_params or self.state.params
         policy_with_params = policy.blind({"params": params})
         inputs = jax.tree.map(lambda x: x, observations)
-        actions = policy_with_params.sample_actions(rng=rng, observation=_model.Observation.from_dict(inputs), noise = noise)
+        actions = policy_with_params.sample_actions(rng=rng, observation=model.Observation.from_dict(inputs), noise = noise)
         actions = jax.tree.map(lambda x: x[..., :14], actions)
         return actions
     
@@ -369,7 +369,7 @@ class TD3AgentHybridDualArm(flax.struct.PyTreeNode):
 
         encoders = {
                 image_key: resnetv1_configs["resnetv1-10"](
-                    pooling_method="spatial_learned_embeddings",
+                    pooling_method="ViT",
                     num_spatial_blocks=8,
                     bottleneck_dim = 128,
                     name=f"encoder_{image_key}",

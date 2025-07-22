@@ -1,10 +1,8 @@
 import functools
-
 import jax
 import jax.numpy as jnp
-
+import numpy as np
 import openpi.shared.array_typing as at
-
 
 @functools.partial(jax.jit, static_argnums=(1, 2, 3))
 @at.typecheck
@@ -37,7 +35,6 @@ def resize_with_pad(
         resized_images = resized_images.clip(-1.0, 1.0)
     else:
         raise ValueError(f"Unsupported image dtype: {images.dtype}")
-
     pad_h0, remainder_h = divmod(height - resized_height, 2)
     pad_h1 = pad_h0 + remainder_h
     pad_w0, remainder_w = divmod(width - resized_width, 2)
@@ -50,4 +47,6 @@ def resize_with_pad(
 
     if not has_batch_dim:
         padded_images = padded_images[0]
+
+
     return padded_images

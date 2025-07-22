@@ -313,7 +313,7 @@ class TrainConfig:
     data: DataConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
 
     # Base directory for config assets (e.g., norm stats).
-    assets_base_dir: str = "./assets"
+    assets_base_dir: str = "/home/anker/robotwin/Pi0-RL-RoboTwin/assets"
     # Base directory for checkpoints.
     checkpoint_base_dir: str = "./checkpoints/"
 

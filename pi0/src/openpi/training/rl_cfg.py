@@ -1,18 +1,24 @@
-from config import TrainConfig, LeRobotAlohaDataConfig, DataConfig
-import openpi.models.pi0 as pi0
-import weight_loaders
 import importlib
 import yaml
 import os
 import gymnasium as gym
 import numpy as np
+import random
+import pdb
+import jax
+
+import pi0.src.openpi.transforms as transforms
+from pi0.src.openpi.shared import image_tools
+from pi0.src.openpi.models import tokenizer, pi0
+from pi0.src.openpi.training.config import TrainConfig, LeRobotAlohaDataConfig, DataConfig
+from pi0.src.openpi.training import weight_loaders
+
 from envs import CONFIGS_PATH
 from envs.utils.create_actor import UnStableError
 from description.utils.generate_episode_instructions import generate_episode_descriptions
-import openpi.transforms as transforms
-from openpi.shared import image_tools
-from openpi.models import tokenizer
-import random
+
+import logging
+logging.getLogger("curobo").setLevel(logging.ERROR)
 
 def create_pi0_base_aloha_rl_lora_config():
     """
@@ -76,10 +82,10 @@ class init_config(gym.Env):
                                 for key in image_keys}
                 ),
                 "image_mask": gym.spaces.Dict(
-                    {key: gym.spaces.Discrete(2) for key in image_keys}
+                    {key: gym.spaces.Box(0, 1, shape=(1,), dtype=np.bool_) for key in image_keys}
                 ),
                 "tokenized_prompt": gym.spaces.Box(
-                    0, np.inf, shape = (48,), dtype=np.int32
+                    0, 257151, shape = (48,), dtype=np.int32
                 ),
                 "tokenized_prompt_mask": gym.spaces.Box(
                     0, 1, shape = (48,), dtype=np.bool_
@@ -102,7 +108,7 @@ class RoboTwinEnv():
     def __init__(self, norm_stats = None):
         self.task_name = ["stack_blocks_two", "stack_blocks_three", "stack_bowls_two", "stack_bowls_three",]
         task_config = "demo_randomized"
-        config_path = f"./task_config/{task_config}.yml"
+        config_path = f"/home/anker/robotwin/Pi0-RL-RoboTwin/task_config/{task_config}.yml"
         with open(config_path, "r", encoding="utf-8") as f:
             self.args = yaml.load(f.read(), Loader=yaml.FullLoader)
         self.args['task_config'] = task_config
@@ -111,7 +117,6 @@ class RoboTwinEnv():
         embodiment_config_path = os.path.join(CONFIGS_PATH, "_embodiment_config.yml")
         with open(embodiment_config_path, "r", encoding="utf-8") as f:
             _embodiment_types = yaml.load(f.read(), Loader=yaml.FullLoader)
-
 
         def get_embodiment_file(embodiment_type):
             robot_file = _embodiment_types[embodiment_type]["file_path"]
@@ -150,6 +155,11 @@ class RoboTwinEnv():
         self.delta_action_mask = transforms.make_bool_mask(6, -1, 6, -1)
         self.tokenizer = tokenizer.PaligemmaTokenizer(48)
         
+        
+    def close_env(self, task):
+        task.close_env(clear_cache = True)
+        if self.args["render_freq"]:
+            task.viewer.close()
 
     def reset(self, task_name = None, mode = None, now_seed = random.randint(2000, 10000), max_seed = 100000):
         if task_name is None:
@@ -162,31 +172,41 @@ class RoboTwinEnv():
             try:
                 task.setup_demo(now_ep_num=0, seed=now_seed, is_test=False, **self.args)
                 episode_info = task.play_once()
-                task.close_env()
+                s1, s2 = task.plan_success, task.check_success()
+                self.close_env(task)
             except UnStableError as e:
-                task.close_env()
+                print("UnStableError: ", e)
+                self.close_env(task)
                 now_seed += 1
                 continue
             except Exception as e:
-                task.close_env()
+                print("Exception: ",e)
+                self.close_env(task)
                 now_seed += 1
                 continue
-            if not task.plan_success or not task.check_success():
+
+
+            if mode != "demo" and (not s1 or not s2):
+                if mode is not None:
+                    raise ValueError("mode must be 'demo' or NOT set")
                 now_seed += 1
                 continue
             else:
                 self.task = task
                 if mode == "demo":
                     self.args["save_demo"] = True
-                    self.args["save_freq"] = 2
-                elif mode is not None:
-                    raise ValueError("mode must be 'demo' or NOT set")
+                    self.args["save_freq"] = 8
+                    if s1 and s2:
+                        self.mode_flag = "success"
+                    else:
+                        self.mode_flag = "fail"
+
                 self.task.setup_demo(now_ep_num=0, seed=now_seed, is_test=False, **self.args)
                 episode_info_list = [episode_info["info"]]
                 results = generate_episode_descriptions(self.args["task_name"], episode_info_list, max_seed)
                 instruction = np.random.choice(results[0]["unseen"])
                 self.task.set_instruction(instruction)
-                self.instruction = instruction
+                self.tokens, self.token_masks = self.tokenizer.tokenize(instruction)
                 observation = self.input(self.get_observation())
 
                 return observation, task_name, now_seed
@@ -210,38 +230,26 @@ class RoboTwinEnv():
         done = True if self.task.eval_success or self.task.take_action_cnt >= self.task.step_lim else False
         reward = 1.0 if self.task.eval_success else 0.0
         if done:
-            self.task.close_env()
+            self.close_env(self.task)
         return next_observation, reward, done, {"success": reward}
 
     def get_observation(self):
-        def encode_obs(obs):
-            input_rgb_arr = [
-                obs["observation"]["head_camera"]["rgb"],
-                obs["observation"]["right_camera"]["rgb"],
-                obs["observation"]["left_camera"]["rgb"],
-            ]
-            input_state = obs["joint_action"]["vector"]
-            return input_rgb_arr, input_state
-        
 
         obs = self.task.get_obs()
-        input_rgb_arr, input_state = encode_obs(obs)
-        tokens, token_masks = self.tokenizer.tokenize(self.instruction)
-
         observation = {
-            "state": input_state,
+            "state": obs["joint_action"]["vector"],
             "image": {
-                "base_0_rgb": input_rgb_arr[0],
-                "left_wrist_0_rgb": input_rgb_arr[2],
-                "right_wrist_0_rgb": input_rgb_arr[1],
+                "base_0_rgb": obs["observation"]["head_camera"]["rgb"],
+                "left_wrist_0_rgb": obs["observation"]["left_camera"]["rgb"],
+                "right_wrist_0_rgb": obs["observation"]["right_camera"]["rgb"],
             },
             "image_mask": {
                 "base_0_rgb":True,
                 "left_wrist_0_rgb": True,
                 "right_wrist_0_rgb": True,
             },
-            "tokenized_prompt": tokens,
-            "tokenized_prompt_mask": token_masks,
+            "tokenized_prompt": self.tokens,
+            "tokenized_prompt_mask": self.token_masks,
         }
         return observation
 
@@ -250,10 +258,13 @@ class RoboTwinEnv():
         observation["state"] = transforms.pad_to_dim(observation["state"], 32)
         if "actions" in observation:
             observation["actions"] = transforms.pad_to_dim(observation["actions"], 32)
+        
         observation = self.input_transform(observation)
+        
         observation["state"] = np.asarray(observation["state"][:14])  # only keep the first 14 dims
-
         observation["image"] = {k: image_tools.resize_with_pad(v, 224, 224) for k, v in observation["image"].items()}
+        observation["image"] = {k: np.array(jax.device_put(v, device=jax.devices("cpu")[0])) for k, v in observation["image"].items()}
+
         return observation
     
     

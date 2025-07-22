@@ -29,7 +29,7 @@ class place_object_stand(Base_Task):
             )
 
         def get_available_model_ids(modelname):
-            asset_path = os.path.join("assets/objects", modelname)
+            asset_path = os.path.join("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects", modelname)
             json_files = glob.glob(os.path.join(asset_path, "model_data*.json"))
 
             available_ids = []

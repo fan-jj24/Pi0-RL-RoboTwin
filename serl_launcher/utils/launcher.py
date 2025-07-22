@@ -10,6 +10,7 @@ from serl_launcher.common.typing import Batch, PRNGKey
 from serl_launcher.common.wandb import WandBLogger
 from serl_launcher.agents.td3_hybrid_dual import TD3AgentHybridDualArm
 from serl_launcher.vision.data_augmentations import batched_random_crop
+from serl_launcher.agents.critic_test import TestAgent
 
 ##############################################################################
 
@@ -88,6 +89,7 @@ def make_td3_pixel_agent_hybrid_dual_arm(
     encoder_type="resnet",
     reward_bias=0.0,
     discount=0.97,
+    pretrained_policy_path = None,
 ):
     agent = TD3AgentHybridDualArm.create_pixels(
         jax.random.PRNGKey(seed),
@@ -96,17 +98,35 @@ def make_td3_pixel_agent_hybrid_dual_arm(
         encoder_type=encoder_type,
         use_proprio=True,
         image_keys=image_keys,
-
-        critic_network_kwargs={
-            "activations": nn.tanh,
-            "use_layer_norm": True,
-            "hidden_dims": [256, 256],
-        },
         discount=discount,
         critic_ensemble_size=2,
-        critic_subsample_size=None,
         reward_bias=reward_bias,
         #augmentation_function=make_batch_augmentation_func(image_keys),
+        pretrained_policy_path = pretrained_policy_path,
     )
     return agent
 
+def make_test_agent(
+    seed,
+    sample_obs,
+    sample_action,
+    image_keys,
+    encoder_type="resnet",
+    reward_bias=0.0,
+    discount=0.97,
+    pretrained_policy_path = None,
+):
+    agent = TestAgent.create_pixels(
+        jax.random.PRNGKey(seed),
+        sample_obs,
+        sample_action,
+        encoder_type=encoder_type,
+        use_proprio=True,
+        image_keys=image_keys,
+        discount=discount,
+        critic_ensemble_size=2,
+        reward_bias=reward_bias,
+        #augmentation_function=make_batch_augmentation_func(image_keys),
+        pretrained_policy_path = pretrained_policy_path,
+    )
+    return agent

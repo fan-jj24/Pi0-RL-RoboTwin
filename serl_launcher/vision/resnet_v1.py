@@ -114,7 +114,24 @@ class SpatialLearnedEmbeddings(nn.Module):
             features = features[0]
 
         return features
+    
+class PatchEmbedding(nn.Module):
+    patch_size: int = 32  # 每个 patch 的大小
+    embed_dim: int = 256  # 输出特征维度 D
 
+    @nn.compact
+    def __call__(self, x):
+        B, H, W, C = x.shape
+        # 确保 H 和 W 能被 patch_size 整除
+        assert H % self.patch_size == 0 and W % self.patch_size == 0
+        x = jax.lax.conv_general_dilated(
+            x,
+            self.param("kernel", nn.initializers.xavier_normal(), (self.patch_size, self.patch_size, C, self.embed_dim)),
+            window_strides=(self.patch_size, self.patch_size),
+            padding="VALID",
+        )  # (B, H/p, W/p, D)
+        B, Ph, Pw, D = x.shape
+        return x.reshape(B, Ph * Pw, D)  # (B, N=Ph*Pw, D)
 
 class MyGroupNorm(nn.GroupNorm):
     def __call__(self, x):
@@ -314,6 +331,8 @@ class ResNetEncoder(nn.Module):
             x = jnp.mean(x, axis=(-3, -2))
         elif self.pooling_method == "max":
             x = jnp.max(x, axis=(-3, -2))
+        elif self.pooling_method == "ViT":
+            x = PatchEmbedding()(x)
         elif self.pooling_method == "none":
             pass
         else:

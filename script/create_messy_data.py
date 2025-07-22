@@ -141,7 +141,7 @@ class Helper:
         # )
 
     def init_messy(self):
-        with open("./assets/objects/objaverse/list.json", "r") as file:
+        with open("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects/objaverse/list.json", "r") as file:
             self.messy_item_info = json.load(file)
         self.obj_names = self.messy_item_info["item_names"]
         self.size_dict = []
@@ -237,7 +237,7 @@ class Helper:
             #     self.viewer.render()
             return success
         else:
-            modeldir = f"./assets/objects/objaverse/{name}/{idx}/"
+            modeldir = f"/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects/objaverse/{name}/{idx}/"
             loader: sapien.URDFLoader = self.scene.create_urdf_loader()
 
             loader.fix_root_link = True
@@ -437,7 +437,7 @@ class Helper:
 
         radius = 2.5
         count, max_count = 0, 13
-        emb = Path("./assets/embodiments")
+        emb = Path("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/embodiments")
 
         joint_dict = {
             "ARX-X5": [-6.155617, 1.1425792, 1.4179262, -0.97225964, -1.4429708e-05, -3.082031e-06, 0.044, 0.044],
@@ -717,7 +717,7 @@ class Helper:
         batch = []
         for cnt, (name, idx, mid, tagged, t, height) in enumerate(tqdm(obj_list)):
             if t == "obj":
-                cfg = Path(f"./assets/objects/{idx}_{name}/model_data{mid}.json")
+                cfg = Path(f"/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects/{idx}_{name}/model_data{mid}.json")
                 if not cfg.exists():
                     print(f"WARNING: {idx}_{name}/{mid} not found")
                     continue
@@ -787,7 +787,7 @@ class Helper:
 
         self.result = []
         test_list_1, test_list_2 = [], []
-        for root_path in Path("./assets/objects").iterdir():
+        for root_path in Path("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects").iterdir():
             if not root_path.is_dir():
                 continue
             if re.search(r"^(\d+)_(.*)$", root_path.name) is None:
@@ -807,7 +807,7 @@ class Helper:
                     minz = 999.9
                     if modelid is not None:
                         modelid = int(modelid.group(1))
-                        cfg = Path(f"./assets/objects/{idx}_{name}/model_data{modelid}.json")
+                        cfg = Path(f"/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects/{idx}_{name}/model_data{modelid}.json")
                         if not cfg.exists():
                             print(f"WARNING: {idx}_{name}/{modelid} not found")
                             continue
@@ -887,7 +887,7 @@ class Helper:
         # sum_y, max_y = -0.2, 0
         # padding = 0.05
         # for cnt, (name, idx, mid, tagged) in enumerate(tqdm(test_list_1)):
-        #     cfg = Path(f'./assets/objects/{idx}_{name}/model_data{mid}.json')
+        #     cfg = Path(f'/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects/{idx}_{name}/model_data{mid}.json')
         #     if not cfg.exists():
         #         print(f'WARNING: {idx}_{name}/{mid} not found')
         #         continue
@@ -937,11 +937,11 @@ def cpy():
             models.append(("_".join(i_split[:-1]), i_split[-1], i))
 
     for name, idx, original_name in tqdm(models):
-        from_path = Path(f"./assets/messy_objects/{original_name}")
-        to_path = Path(f"./assets/messy_objects_stable/{original_name}")
+        from_path = Path(f"/home/anker/robotwin/Pi0-RL-RoboTwin/assets/messy_objects/{original_name}")
+        to_path = Path(f"/home/anker/robotwin/Pi0-RL-RoboTwin/assets/messy_objects_stable/{original_name}")
         os.system(f"cp -r {from_path} {to_path}")
 
-    with open("./assets/messy_objects/list.json", "r", encoding="utf-8") as f:
+    with open("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/messy_objects/list.json", "r", encoding="utf-8") as f:
         metadata = json.load(f)
 
     list_of_items = {}
@@ -967,7 +967,7 @@ def cpy():
         },
     }
 
-    with open("./assets/messy_objects_stable/list.json", "w", encoding="utf-8") as f:
+    with open("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/messy_objects_stable/list.json", "w", encoding="utf-8") as f:
         json.dump(new_metadata, f, ensure_ascii=False, indent=4)
 
 
@@ -976,7 +976,7 @@ def cfg():
     with open("result.jsonl", "r", encoding="utf-8") as f:
         for i in f.readlines():
             result.append(json.loads(i.strip()))
-    root_path = Path("./assets/objects")
+    root_path = Path("/home/anker/robotwin/Pi0-RL-RoboTwin/assets/objects")
     for res in result:
         res_cfg = root_path / res["name"] / f'model_data{res["id"]}.json'
         if res_cfg.exists():

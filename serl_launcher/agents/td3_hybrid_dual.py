@@ -8,31 +8,30 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from serl_launcher.common.common import JaxRLTrainState, ModuleDict, nonpytree_field
-from serl_launcher.common.encoding import EncodingWrapper, SmallTransformerTextEncoder
+from serl_launcher.common.encoding import EncodingWrapper, SmallTransformerTextEncoder, SmallTransformerActionEncoder
 from serl_launcher.common.optimizers import make_optimizer
 from serl_launcher.common.typing import Batch, Data, Params, PRNGKey
 from serl_launcher.networks.actor_critic_nets import ensemblize
 from serl_launcher.utils.train_utils import _unpack
 from serl_launcher.networks.cross_att import CrossAttentiveCritic
-from serl_launcher.vision.resnet_v1 import resnetv1_configs
-from pi0.src.openpi.training.rl_cfg import create_pi0_base_aloha_rl_lora_config
-from pi0.src.openpi.models import model
+from serl_launcher.vision.convernext import ConvNeXtEncoder
+from pi0.src.openpi.models import model, pi0
 
-def create_policy():
-    config = create_pi0_base_aloha_rl_lora_config()
-    rng = jax.random.key(config.seed)
+def create_policy_with_lora(pretrained_policy_path = None):
+    policy_config=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora")
+    rng = jax.random.key(42)
     _, model_rng = jax.random.split(rng)
-    policy = config.model.create(model_rng)
-    return policy
+    policy_def = policy_config.create(model_rng)
+    freeze_filter = policy_config.get_freeze_filter()
+    if pretrained_policy_path is not None:
+        pretrained_actor_params = model.restore_params(pretrained_policy_path, dtype=jnp.float32)
+    else:
+        raise ValueError("pretrained_policy_path must be provided for post training")
+    return policy_def, pretrained_actor_params, freeze_filter
 
 
 class TD3AgentHybridDualArm(flax.struct.PyTreeNode):
-    """
-    Twin Delayed DDPG (TD3) agent with hybrid policy for dual arm setups.
-    - Uses deterministic policy network
-    - Maintains two Q-networks (Critic ensemble size = 2)
-    - Uses DQN for gripper actions
-    """
+
     state: JaxRLTrainState
     config: dict = nonpytree_field()
 
@@ -81,7 +80,7 @@ class TD3AgentHybridDualArm(flax.struct.PyTreeNode):
         if train:
             assert rng is not None, "Must specify rng when training"
         rng_noise, rng_rest = jax.random.split(rng)
-        batch_size = observations.shape[0]
+        batch_size = 1
         noise = jax.random.normal(rng_noise, (batch_size, 50, 32))
         policy = self.state.policy
         params = grad_params or self.state.params
@@ -126,32 +125,31 @@ class TD3AgentHybridDualArm(flax.struct.PyTreeNode):
         )
         
         # Take minimum across twin Q-networks
-        target_next_min_q = target_next_qs.min(axis=0)
-        chex.assert_shape(target_next_min_q, (batch_size,))
+        # target_next_min_q = target_next_qs.min(axis=0)
+        # chex.assert_shape(target_next_min_q, (batch_size,))
         
         # Compute target Q-value
         target_q = (
             batch["rewards"]
-            + self.config["discount"] * batch["masks"] * target_next_min_q
+            + self.config["discount"] * batch["masks"] * target_next_qs
         )
         chex.assert_shape(target_q, (batch_size,))
         
         # Predicted Q-values for current actions
-        predicted_qs = self.forward_critic(
+        predicted_q = self.forward_critic(
             batch["observations"], actions, rng=rng, grad_params=params
         )
-        chex.assert_shape(
-            predicted_qs, (self.config["critic_ensemble_size"], batch_size)
-        )
-        
+        # chex.assert_shape(predicted_qs, (self.config["critic_ensemble_size"], batch_size))
+        chex.assert_shape(predicted_q, (batch_size,))
+
         # Compute MSE loss
-        target_qs = target_q[None].repeat(self.config["critic_ensemble_size"], axis=0)
-        critic_loss = jnp.mean((predicted_qs - target_qs) ** 2)
+        # target_qs = target_q[None].repeat(self.config["critic_ensemble_size"], axis=0)
+        critic_loss = jnp.mean((predicted_q - target_q) ** 2)
         
         return critic_loss, {
             "critic_loss": critic_loss,
-            "predicted_qs": jnp.mean(predicted_qs),
-            "target_qs": jnp.mean(target_qs),
+            # "predicted_qs": jnp.mean(predicted_qs),
+            # "target_qs": jnp.mean(target_qs),
         }
 
     def policy_loss_fn(self, batch, params: Params, rng: PRNGKey):
@@ -164,14 +162,14 @@ class TD3AgentHybridDualArm(flax.struct.PyTreeNode):
         )
         
         # Get Q-values from first critic
-        predicted_qs = self.forward_critic(
+        predicted_q = self.forward_critic(
             batch["observations"],
             actions,
             rng=rng,
         )
         
         # Use minimum Q-value as policy objective
-        predicted_q = predicted_qs.min(axis=0)
+        # predicted_q = predicted_qs.min(axis=0)
         policy_loss = -jnp.mean(predicted_q)
         
         return policy_loss, {
@@ -250,17 +248,13 @@ class TD3AgentHybridDualArm(flax.struct.PyTreeNode):
         argmax: bool = False,
         **kwargs,
     ) -> jnp.ndarray:
-        """
-        Sample actions from the policy network, **using an external RNG** (or approximating the argmax).
-        The internal RNG will not be updated.
-        """
+
         observations = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], observations)
-        # For deterministic policy, just take mode or sample with provided seed
         if argmax:
             joint_actions = self.forward_policy(observations, rng=seed, train=False)
         else:
             assert seed is not None, "Must provide seed for sampling"
-            noise = jax.random.normal(seed, shape=(observations.shape[0], action_chunk, 14)) * 0.1
+            noise = jax.random.normal(seed, shape=(1, action_chunk, 14)) * 0.1
             noise = jnp.clip(noise, -self.config["noise_clip"], self.config["noise_clip"])
             joint_actions = self.forward_policy(observations, rng=seed, train=False) + noise
 
@@ -287,7 +281,7 @@ class TD3AgentHybridDualArm(flax.struct.PyTreeNode):
         # Algorithm config
         discount: float = 0.95,
         soft_target_update_rate: float = 0.005,
-        target_policy_noise: float = 0.2,
+        target_policy_noise: float = 0.1,
         noise_clip: float = 0.1,
         policy_update_freq: int = 2,
         image_keys: Iterable[str] = None,
@@ -368,43 +362,29 @@ class TD3AgentHybridDualArm(flax.struct.PyTreeNode):
     ):
 
         encoders = {
-                image_key: resnetv1_configs["resnetv1-10"](
-                    pooling_method="ViT",
-                    num_spatial_blocks=8,
-                    bottleneck_dim = 128,
-                    name=f"encoder_{image_key}",
-                )
+                image_key: ConvNeXtEncoder()
                 for image_key in image_keys
-            }
-        
+        }
 
-        critic_def = partial(
-            CrossAttentiveCritic,
-            encoder=partial(
-                EncodingWrapper,
+        critic_def = CrossAttentiveCritic(
+            obs_encoder=EncodingWrapper(
                 encoder=encoders,
                 use_proprio=use_proprio,
                 image_keys=image_keys,
-                fuse_proprio_images = True,
+                fuse_proprio_images=True,
             ),
-            text_encoder=partial(
-                SmallTransformerTextEncoder,
-                vocab_size=30522,
-                embed_dim=128,
-                num_layers=3,
-                num_heads=4,
-                pooling="cls",
-            ),
+            action_encoder=SmallTransformerActionEncoder(),
+            text_encoder=SmallTransformerTextEncoder(),
             cross_attn_num_heads=4,
             cross_attn_dropout_rate=0.1,
             cross_attn_use_layer_norm=True,
-            mlp_hidden_dims=(256, 256),
+            mlp_hidden_dims=(64, 1),
             mlp_activations="swish",
             mlp_dropout_rate=0.1,
             mlp_use_layer_norm=True
         )
-        critic_def = ensemblize(critic_def, ensemble_size=critic_ensemble_size)(name="critic_ensemble")
-        policy_def = create_policy()       
+        # critic_def = ensemblize(critic_def, ensemble_size=critic_ensemble_size)(name="critic_ensemble")
+        policy_def = create_policy_with_lora()       
         pretrained_actor_params = None
 
         

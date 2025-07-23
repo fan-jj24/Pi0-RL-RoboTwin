@@ -8,11 +8,12 @@ import jax
 import jax.numpy as jnp
 from typing_extensions import override
 
-from openpi.models import model as _model
-import openpi.models.gemma as _gemma
-import openpi.models.siglip as _siglip
-from openpi.shared import array_typing as at
-import openpi.shared.nnx_utils as nnx_utils
+from pi0.src.openpi.models import model as _model
+import pi0.src.openpi.models.gemma as _gemma
+import pi0.src.openpi.models.siglip as _siglip
+from pi0.src.openpi.shared import array_typing as at
+import pi0.src.openpi.shared.nnx_utils as nnx_utils
+from pi0.src.openpi.transforms import pad_to_dim
 
 logger = logging.getLogger("openpi")
 
@@ -224,7 +225,9 @@ class Pi0(_model.BaseModel):
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask
+    
 
+    # SFT Loss
     @override
     def compute_loss(self,
                      rng: at.KeyArrayLike,
@@ -255,23 +258,35 @@ class Pi0(_model.BaseModel):
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon:])
 
         return jnp.mean(jnp.square(v_t - u_t), axis=-1)
-
+    
     @override
-    def sample_actions(
+    def sample_actions(self, rng, observation):
+        return self.__call__(rng, observation)
+    
+
+    def input_obs(self, observation):
+        if not isinstance(observation, _model.Observation):
+            obs_dict = jax.tree.map(lambda x: x, observation)
+            obs_dict["image_mask"] = {k: jnp.asarray(v, dtype=bool).reshape(-1) for k, v in obs_dict["image_mask"].items()}
+            obs_dict["state"] = jnp.asarray(pad_to_dim(obs_dict["state"], 32), dtype=jnp.float32)
+            observation = _model.Observation.from_dict(obs_dict)
+        return observation
+
+
+    def __call__(
         self,
         rng: at.KeyArrayLike,
-        observation: _model.Observation,
+        observation,
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
-        noise = None,
     ) -> _model.Actions:
+        observation = self.input_obs(observation)
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
         # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
         dt = -1.0 / num_steps
         batch_size = observation.state.shape[0]
-        if noise is None:
-            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+        noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
 
         # first fill KV cache with a forward pass of the prefix
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)

@@ -4,15 +4,11 @@ import os
 import gymnasium as gym
 import numpy as np
 import random
-import pdb
 import jax
 
-import pi0.src.openpi.transforms as transforms
+from pi0.src.openpi.transforms import Normalize, Unnormalize, make_bool_mask, pad_to_dim
 from pi0.src.openpi.shared import image_tools
-from pi0.src.openpi.models import tokenizer, pi0
-from pi0.src.openpi.training.config import TrainConfig, LeRobotAlohaDataConfig, DataConfig
-from pi0.src.openpi.training import weight_loaders
-
+from pi0.src.openpi.models import tokenizer
 from envs import CONFIGS_PATH
 from envs.utils.create_actor import UnStableError
 from description.utils.generate_episode_instructions import generate_episode_descriptions
@@ -20,55 +16,11 @@ from description.utils.generate_episode_instructions import generate_episode_des
 import logging
 logging.getLogger("curobo").setLevel(logging.ERROR)
 
-def create_pi0_base_aloha_rl_lora_config():
-    """
-    Create a configuration for training the Pi0 model with Aloha dataset using LoRA.
-    
-    Returns:
-        TrainConfig: The configuration object for training.
-    """
-    return TrainConfig(
-        name="pi0_base_aloha_robotwin_rl_lora",
-        model=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
 
-        data=LeRobotAlohaDataConfig(
-            repo_id="online_rl",  # load the norm stats from pre-trained repo
-            adapt_to_pi=False,    #important for robotwin env
-            base_config=DataConfig(
-                local_files_only=True,  # Set to True for local-only datasets.
-                prompt_from_task=True,  # Set to True for prompt by task_name
-            ),
-        ),
-        image_keys=["base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"],
-        freeze_filter=pi0.Pi0Config(paligemma_variant="gemma_2b_lora",
-                                    action_expert_variant="gemma_300m_lora").get_freeze_filter(),
-        batch_size=32,  # the total batch_size not pre_gpu batch_size
-        discount = 0.97,
-        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
-
-        num_train_steps=30000, # env step is much faster than training step
-        fsdp_devices=1,  # it must be divisible by the number of GPUs
-
-
-        max_step = 100000000,
-        buffer_period=200,  # save the buffer every 10000 steps
-        log_period=10,
-
-        training_starts = 100, 
-        cta_ratio = 20,
-        steps_per_update=1,  # number of steps per update
-        cheackpoint_period=200,  # save the checkpoint every 1000 steps
-
-        replay_buffer_capacity = 200000,
-
-    )
-
-
-class init_config(gym.Env):
+class rl_config():
     def __init__(self, action_chunk = 50):
-        # Action/Observation Space
         self.action_space = gym.spaces.Box(
-            -np.pi, np.pi, shape=(action_chunk,14), dtype=np.float32  # just retain the last action
+            -np.pi, np.pi, shape=(action_chunk,14), dtype=np.float32  
         )
         image_keys = ["base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"]
         self.observation_space = gym.spaces.Dict(
@@ -147,12 +99,12 @@ class RoboTwinEnv():
         self.args["right_embodiment_config"] = get_embodiment_config(self.args["right_robot_file"])
 
         if norm_stats is not None:
-            self.input_transform = transforms.Normalize(norm_stats, use_quantiles=False)
-            self.output_transform = transforms.Unnormalize(norm_stats, use_quantiles=False)
+            self.input_transform = Normalize(norm_stats, use_quantiles=False)
+            self.output_transform = Unnormalize(norm_stats, use_quantiles=False)
         else:
             raise ValueError("norm_stats must be provided for transforms")
         
-        self.delta_action_mask = transforms.make_bool_mask(6, -1, 6, -1)
+        self.delta_action_mask = make_bool_mask(6, -1, 6, -1)
         self.tokenizer = tokenizer.PaligemmaTokenizer(48)
         
         
@@ -212,7 +164,7 @@ class RoboTwinEnv():
                 return observation, task_name, now_seed
         
     def step(self, actions):
-        actions = transforms.pad_to_dim(actions, 32)
+        actions = pad_to_dim(actions, 32)
         observation = self.input(self.get_observation())
         state = observation["state"]
         output = self.output_transform({
@@ -255,13 +207,15 @@ class RoboTwinEnv():
 
 
     def input(self, observation):
-        observation["state"] = transforms.pad_to_dim(observation["state"], 32)
+        observation["state"] = pad_to_dim(observation["state"], 32)
         if "actions" in observation:
-            observation["actions"] = transforms.pad_to_dim(observation["actions"], 32)
+            observation["actions"] = pad_to_dim(observation["actions"], 32)
         
         observation = self.input_transform(observation)
         
         observation["state"] = np.asarray(observation["state"][:14])  # only keep the first 14 dims
+        if "actions" in observation:
+            observation["actions"] = np.asarray(observation["actions"][:, :14])
         observation["image"] = {k: image_tools.resize_with_pad(v, 224, 224) for k, v in observation["image"].items()}
         observation["image"] = {k: np.array(jax.device_put(v, device=jax.devices("cpu")[0])) for k, v in observation["image"].items()}
 

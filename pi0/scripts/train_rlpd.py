@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 import glob
 import time
 import jax
@@ -12,45 +11,31 @@ import os
 import copy
 import pickle as pkl
 from natsort import natsorted
-
 from serl_launcher.agents.td3_hybrid_dual import TD3AgentHybridDualArm
 from serl_launcher.utils.timer_utils import Timer
 from serl_launcher.utils.train_utils import concat_batches
 from agentlace.trainer import TrainerServer, TrainerClient
 from agentlace.data.data_store import QueuedDataStore
-
-from serl_launcher.utils.launcher import (
-    make_td3_pixel_agent_hybrid_dual_arm,
-    make_trainer_config,
-    make_wandb_logger,
-)
+from serl_launcher.utils.launcher import make_td3_pixel_agent_hybrid_dual_arm, make_trainer_config, make_wandb_logger
 from serl_launcher.data.data_store import DynamicNextObsReplayBufferDataStore
-from pi0.src.openpi.training.rl_cfg import create_pi0_base_aloha_rl_lora_config, RoboTwinEnv
+from pi0.src.openpi.training.rl_cfg import create_pi0_base_aloha_rl_lora_config, RoboTwinEnv, rl_config
+import os
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
+
 config = create_pi0_base_aloha_rl_lora_config()
 
-
 FLAGS = flags.FLAGS
-flags.DEFINE_string("exp_name", None, "Name of experiment corresponding to folder.")
 flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_boolean("learner", False, "Whether this is a learner.")
 flags.DEFINE_boolean("actor", False, "Whether this is an actor.")
 flags.DEFINE_string("ip", "localhost", "IP address of the learner.")
 flags.DEFINE_multi_string("demo_path", None, "Path to the demo data.")
 flags.DEFINE_string("checkpoint_path", None, "Path to save checkpoints.")
-flags.DEFINE_integer("eval_checkpoint_step", 0, "Step to evaluate the checkpoint.")
-flags.DEFINE_integer("eval_n_trajs", 0, "Number of trajectories to evaluate.")
 flags.DEFINE_boolean("save_video", False, "Save video.")
-
-flags.DEFINE_boolean(
-    "debug", False, "Debug mode."
-)  # debug mode will disable wandb logging
-
-
+flags.DEFINE_boolean("debug", False, "Debug mode.")  # debug mode will disable wandb logging
 devices = jax.local_devices()
 num_devices = len(devices)
 sharding = jax.sharding.PositionalSharding(devices)
-
-
 def print_green(x):
     return print("\033[92m {}\033[00m".format(x))
 
@@ -60,11 +45,12 @@ def print_green(x):
 
 def actor(agent, data_store, intvn_data_store, sampling_rng):
     
-    start_step = (
-        int(os.path.basename(natsorted(glob.glob(os.path.join(FLAGS.checkpoint_path, "buffer/*.pkl")))[-1])[12:-4]) + 1
-        if FLAGS.checkpoint_path and os.path.exists(FLAGS.checkpoint_path)
-        else 0
-    )
+    buffer_dir = os.path.join(FLAGS.checkpoint_path, "buffer")
+    buffer_files = natsorted(glob.glob(os.path.join(buffer_dir, "transitions_*.pkl")))
+    if FLAGS.checkpoint_path and os.path.exists(buffer_dir) and buffer_files:
+        start_step = int(os.path.basename(buffer_files[-1])[12:-4]) + 1
+    else:
+        start_step = 0
 
     datastore_dict = {
         "actor_env": data_store,
@@ -90,12 +76,12 @@ def actor(agent, data_store, intvn_data_store, sampling_rng):
     transitions = []
     # demo_transitions = []
     env = RoboTwinEnv()
-    obs, task_name= env.reset()
+    obs, task_name, now_seed = env.reset()
     done = False
 
     # training loop
     timer = Timer()
-    running_return = 0.0
+    # running_return = 0.0
     #already_intervened = False
     #intervention_count = 0
     #intervention_steps = 0
@@ -117,10 +103,10 @@ def actor(agent, data_store, intvn_data_store, sampling_rng):
         with timer.context("step_env"):
 
             next_obs, reward, done, info = env.step(actions)
-            if "left" in info:
-                info.pop("left")
-            if "right" in info:
-                info.pop("right")
+            # if "left" in info:
+            #     info.pop("left")
+            # if "right" in info:
+            #     info.pop("right")
             '''
             # override the action with the intervention action
             if "intervene_action" in info:
@@ -132,7 +118,7 @@ def actor(agent, data_store, intvn_data_store, sampling_rng):
             else:
                 already_intervened = False'''
 
-            running_return += reward
+            # running_return += reward
             transition = dict(
                 observations=obs,
                 actions=actions,
@@ -153,15 +139,15 @@ def actor(agent, data_store, intvn_data_store, sampling_rng):
                 #info["episode"]["intervention_steps"] = intervention_steps
                 stats = {"environment": info}  # send stats to the learner to log
                 client.request("send-stats", stats)
-                pbar.set_description(f"last return: {running_return}")
-                running_return = 0.0
+                # pbar.set_description(f"last return: {running_return}")
+                # running_return = 0.0
                 #intervention_count = 0
                 #intervention_steps = 0
                 #already_intervened = False
                 client.update()
-                obs, task_name = env.reset()
+                obs, task_name, now_seed = env.reset()
 
-        if step > 0 and config.buffer_period > 0 and step % config.buffer_period == 0:
+        if step > 0 and config.buffer_period and step % config.buffer_period == 0:
             # dump to pickle file
             buffer_path = os.path.join(FLAGS.checkpoint_path, "buffer")
             #demo_buffer_path = os.path.join(FLAGS.checkpoint_path, "demo_buffer")
@@ -192,12 +178,15 @@ def learner(rng, agent, replay_buffer, demo_buffer, wandb_logger=None):
     """
     The learner loop, which runs when "--learner" is set to True.
     """
-    start_step = (
-        int(os.path.basename(checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path)))[11:])
-        + 1
-        if FLAGS.checkpoint_path and os.path.exists(FLAGS.checkpoint_path)
-        else 0
-    )
+    latest_ckpt = checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path)) if FLAGS.checkpoint_path and os.path.exists(FLAGS.checkpoint_path) else None
+
+    if latest_ckpt is not None:
+        start_step = int(os.path.basename(latest_ckpt)[11:]) + 1
+        print(f"Resuming from checkpoint at step {start_step}.")
+    else:
+        start_step = 0
+        print("No checkpoint found. Starting from step 0.")
+
     step = start_step
 
     def stats_callback(type: str, payload: dict) -> dict:
@@ -266,6 +255,9 @@ def learner(rng, agent, replay_buffer, demo_buffer, wandb_logger=None):
                     batch,
                     networks_to_update=train_critic_networks_to_update,
                 )
+                if critic_step % config.log_period == 0 and wandb_logger:
+                    wandb_logger.log(critics_info, step = critic_step * (step + 1))
+
 
         with timer.context("train"):
             batch = next(replay_iterator)
@@ -300,16 +292,21 @@ def learner(rng, agent, replay_buffer, demo_buffer, wandb_logger=None):
 ##############################################################################
 
 def main(_):
-    from openpi.training.rl_cfg import init_config
-    TASK_ENV = init_config()
+    TASK_ENV = rl_config()
     assert config.batch_size % num_devices == 0
     # seed
     rng = jax.random.PRNGKey(FLAGS.seed)
     rng, sampling_rng = jax.random.split(rng)    
+
+    sample_obs=TASK_ENV.observation_space.sample()
+    sample_action=TASK_ENV.action_space.sample()
+    sample_obs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], sample_obs)
+    sample_action = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], sample_action)
+
     agent: TD3AgentHybridDualArm = make_td3_pixel_agent_hybrid_dual_arm(
         seed=FLAGS.seed,
-        sample_obs=TASK_ENV.observation_space.sample(),
-        sample_action=TASK_ENV.action_space.sample(),
+        sample_obs=sample_obs,
+        sample_action=sample_action,
         image_keys=config.image_keys,
         #encoder_type=config.encoder_type,
         discount=config.discount,
@@ -321,16 +318,19 @@ def main(_):
     )
 
     if FLAGS.checkpoint_path is not None and os.path.exists(FLAGS.checkpoint_path):
-        input("Checkpoint path already exists. Press Enter to resume training.")
+        print("Checkpoint path already exists. Press Enter to resume training.")
         ckpt = checkpoints.restore_checkpoint(
             os.path.abspath(FLAGS.checkpoint_path),
             agent.state,
         )
         agent = agent.replace(state=ckpt)
-        ckpt_number = os.path.basename(
-            checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path))
-        )[11:]
-        print_green(f"Loaded previous checkpoint at step {ckpt_number}.")
+        latest_ckpt = checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path))
+        if latest_ckpt is not None:
+            ckpt_number = os.path.basename(latest_ckpt)[11:]
+            print(f"Loaded previous checkpoint at step {ckpt_number}.")
+        else:
+            print("No checkpoint found. Starting from scratch.")
+            ckpt_number = 0
 
     def create_replay_buffer_and_wandb_logger():
         replay_buffer = DynamicNextObsReplayBufferDataStore(
@@ -404,8 +404,8 @@ def main(_):
 
     elif FLAGS.actor:
         sampling_rng = jax.device_put(sampling_rng, sharding.replicate())
-        data_store = QueuedDataStore(50000)  # the queue size on the actor
-        intvn_data_store = QueuedDataStore(50000)
+        data_store = QueuedDataStore(20000)  # the queue size on the actor
+        intvn_data_store = QueuedDataStore(20000)
 
         # actor loop
         print_green("starting actor loop")

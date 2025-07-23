@@ -31,17 +31,18 @@ def main():
 
     for val in TASK:
         print(f"\033[32mTask: {val}\033[0m")
-        start_seed, i, j = 999, 0, 0
+        start_seed, i, j = 2000, 0, 0
         while i < success_count or j < fail_count:
             if i< success_count:
                 _, _, start_seed = env.reset(task_name = val, mode = "demo",now_seed = start_seed + 1, max_seed = 2000)
             else:
-                env.reset(task_name = val, mode = "demo",now_seed = seed2[val][j], max_seed = 2000)
+                env.reset(task_name = val, mode = "demo",now_seed = seed2[val][j + 5], max_seed = 2000)
             env.task.play_once()
             env.close_env(env.task)
             demo = env.task.demo_traj
             if env.mode_flag == "success" and i >= success_count:
-                print(f"\033[33mTask {val} {seed2[val][j]} success, skip.\033[0m")
+                print(f"\033[33mTask {val} {seed2[val][j + 5]} success, skip.\033[0m")
+                j += 1
                 continue
             if env.mode_flag == "fail" and j >= fail_count:
                 print(f"\033[33mTask {val} {start_seed} fail, skip.\033[0m")
@@ -57,16 +58,16 @@ def main():
                 obs["tokenized_prompt"], obs["tokenized_prompt_mask"] = env.tokens, env.token_masks
                 if index == len(demo) - 1:
                     if env.mode_flag == "success":
-                        i += 1
                         success_seed.append(start_seed)
+                        i += 1
                         done, rew = True, 1.0
                     else:
-                        j += 1
                         if i < success_count:
                             fail_seed.append(start_seed)
                         else:
-                            fail_seed.append(seed2[val][j])
-                        done, rew = False, 0.0
+                            fail_seed.append(seed2[val][j + 5])
+                        j += 1
+                        done, rew = True, 0.0
 
                     next_obs = obs
                     while len(actions) < 50:

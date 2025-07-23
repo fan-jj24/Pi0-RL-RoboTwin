@@ -14,6 +14,7 @@ from serl_launcher.common.typing import Batch, Data, Params, PRNGKey
 from serl_launcher.utils.train_utils import _unpack
 from serl_launcher.networks.cross_att import CrossAttentiveCritic
 from serl_launcher.vision.convernext import ConvNeXtEncoder
+
 class TestAgent(flax.struct.PyTreeNode):
 
     state: JaxRLTrainState
@@ -259,64 +260,39 @@ from flax.training import checkpoints
 from absl import app, flags
 import tqdm
 from serl_launcher.utils.timer_utils import Timer
-from serl_launcher.utils.train_utils import concat_batches
 
 FLAGS = flags.FLAGS
-flags.DEFINE_multi_string("demo_path", "/home/anker/robotwin/Pi0-RL-RoboTwin/demo_data/10_demos_2025-07-19_12-25-53.pkl", "Path to the demo data.")
+# flags.DEFINE_multi_string("demo_path", "demo_data/15_demos_2025-07-22_11-37-30.pkl", "Path to the demo data.")
+flags.DEFINE_multi_string("demo_path", "demo_data/15_demos_2025-07-22_15-50-46.pkl", "Path to the demo data.")
 flags.DEFINE_integer("seed", 42, "Random seed.")
-flags.DEFINE_string("checkpoint_path", "/home/anker/robotwin/Pi0-RL-RoboTwin/checkpoints", "Path to save checkpoints.")
+flags.DEFINE_string("checkpoint_path", "checkpoints", "Path to save checkpoints.")
 
 
-def learner(agent, replay_buffer, demo_buffer, wandb_logger=None):
-    latest_ckpt = checkpoints.latest_checkpoint(os.path.abspath(FLAGS.checkpoint_path)) if FLAGS.checkpoint_path and os.path.exists(FLAGS.checkpoint_path) else None
-
-    if latest_ckpt is not None:
-        start_step = int(os.path.basename(latest_ckpt)[11:]) + 1
-        print(f"Resuming from checkpoint at step {start_step}.")
-    else:
-        start_step = 0
-        print("No checkpoint found. Starting from step 0.")
-
-    step = start_step
-
-
-    # 50/50 sampling from RLPD, half from demo and half from online experience
-    replay_iterator = replay_buffer.get_iterator(
-        sample_args={
-            "batch_size": 16,
-        },
-    )
-    demo_iterator = demo_buffer.get_iterator(
-        sample_args={
-            "batch_size": 16,
-        },
-    )
-
-    # wait till the replay buffer is filled with enough data
-    timer = Timer()
-    train_critic_networks_to_update = frozenset({"critic"})
-
+def valer(rng, agent, transitions):
+    import matplotlib.pyplot as plt
+    ground_truth, target_value, value = [], [], []
     for step in tqdm.tqdm(
-        range(start_step, 10000000), dynamic_ncols=True, desc="learner"
+        range(len(transitions)), dynamic_ncols=True, desc="valer"
     ):  
-
-        with timer.context("train"):
-            batch = next(replay_iterator)
-            demo_batch = next(demo_iterator)
-            batch = concat_batches(batch, demo_batch, axis=0)
-            agent, update_info = agent.update(
-                batch,
-                networks_to_update=train_critic_networks_to_update,
-            )
-
-        if step % 10 == 0 and wandb_logger:
-            wandb_logger.log(update_info, step=step)
-            wandb_logger.log({"timer": timer.get_average_times()}, step=step)
-
-        if step > 0 and step % 10000 == 0:
-            checkpoints.save_checkpoint(
-                os.path.abspath(FLAGS.checkpoint_path), agent.state, step=step, keep=2
-            )
+        transition = transitions[step]
+        transition = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], transition)
+        ground_truth.append(transition["return"])
+        target_value.append(agent.forward_target_critic(observations = transition["observations"], actions = transition["actions"], rng = rng))
+        value.append(agent.forward_critic(observations = transition["observations"], actions = transition["actions"], rng = rng))
+    loss1 = jnp.mean(jnp.square(jnp.array(ground_truth) - jnp.array(value)))
+    loss2 = jnp.mean(jnp.square(jnp.array(ground_truth) - jnp.array(target_value)))
+    plt.figure(figsize=(10, 5))
+    plt.plot(ground_truth, label="Ground Truth", color='red')
+    plt.plot(value, label="Value", color='blue')
+    plt.plot(target_value, label="Target Value", color='green')
+    plt.legend()
+    plt.xlabel("Step")
+    plt.ylabel("Value")
+    plt.title(f"Value Comparison (Loss1: {loss1:.4f}, Loss2: {loss2:.4f})")
+    plt.show()
+    plt.savefig("value_comparison_unseen.png")
+    plt.close()
+    print(f"Loss1: {loss1}, Loss2: {loss2}")
 
 def make_test_agent(
     seed,
@@ -325,7 +301,7 @@ def make_test_agent(
     image_keys,
     encoder_type="resnetv1-10-vit",
     reward_bias=0.0,
-    discount=0.90,
+    discount=0.95,
     pretrained_policy_path = None,
 ):
     agent = TestAgent.create_pixels(
@@ -341,16 +317,12 @@ def make_test_agent(
     )
     return agent
 
-import glob
-import pdb
 import pickle as pkl
-from pi0.src.openpi.training.rl_cfg import init_config
-from serl_launcher.utils.launcher import make_wandb_logger
-from serl_launcher.data.data_store import DynamicNextObsReplayBufferDataStore
+from pi0.src.openpi.training.rl_cfg import rl_config
 
 def main(_):
     
-    TASK_ENV = init_config()
+    TASK_ENV = rl_config()
     # seed
     rng = jax.random.PRNGKey(FLAGS.seed)
     rng, sampling_rng = jax.random.split(rng)
@@ -382,69 +354,31 @@ def main(_):
             print("No checkpoint found. Starting from scratch.")
             ckpt_number = 0
 
-    def create_replay_buffer_and_wandb_logger():
-        replay_buffer = DynamicNextObsReplayBufferDataStore(
-            TASK_ENV.observation_space,
-            TASK_ENV.action_space,
-            capacity=20000,
-        )
-        # set up wandb and logging
-        wandb_logger = make_wandb_logger(
-            project="cross-attentive-critic",
-            description="test cross-attentive-critic",
-        )
-        return replay_buffer, wandb_logger
-
-    # learner:
-    replay_buffer, wandb_logger = create_replay_buffer_and_wandb_logger()
-    demo_buffer = DynamicNextObsReplayBufferDataStore(
-        TASK_ENV.observation_space,
-        TASK_ENV.action_space,
-        capacity=20000,
-    )
 
     for path in FLAGS.demo_path:
         with open(path, "rb") as f:
             transitions = pkl.load(f)
-            for transition in transitions:
-                demo_buffer.insert(transition)
-                replay_buffer.insert(transition)
-    print(f"demo buffer size: {len(demo_buffer)}")
-    print(f"online buffer size: {len(replay_buffer)}")
+            discount = 0.95
+            transitions_rev = transitions[::-1]
+            ret = 0.0
+            for t in transitions_rev:
+                if t["dones"]:
+                    ret = t["rewards"]
+                else:
+                    ret = t["rewards"] + discount * ret
+                t["return"] = ret
+            transitions = transitions_rev[::-1]
+            
+    import random
+    # random.shuffle(transitions)
 
-    if FLAGS.checkpoint_path is not None and os.path.exists(
-        os.path.join(FLAGS.checkpoint_path, "buffer")
-    ):
-        for file in glob.glob(os.path.join(FLAGS.checkpoint_path, "buffer/*.pkl")):
-            with open(file, "rb") as f:
-                transitions = pkl.load(f)
-                for transition in transitions:
-                    replay_buffer.insert(transition)
-        print(
-            f"Loaded previous buffer data. Replay buffer size: {len(replay_buffer)}"
-        )
-
-    if FLAGS.checkpoint_path is not None and os.path.exists(
-        os.path.join(FLAGS.checkpoint_path, "demo_buffer")
-    ):
-        for file in glob.glob(
-            os.path.join(FLAGS.checkpoint_path, "demo_buffer/*.pkl")
-        ):
-            with open(file, "rb") as f:
-                transitions = pkl.load(f)
-                for transition in transitions:
-                    demo_buffer.insert(transition)
-        print(
-            f"Loaded previous demo buffer data. Demo buffer size: {len(demo_buffer)}"
-        )
 
     # learner loop
     print("starting learner loop")
-    learner(
+    valer(
+        rng,
         agent,
-        replay_buffer,
-        demo_buffer=demo_buffer,
-        wandb_logger=wandb_logger,
+        transitions
     )
 
 

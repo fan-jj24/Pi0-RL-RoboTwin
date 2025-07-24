@@ -4,13 +4,12 @@ from functools import partial
 import glob
 import pickle as pkl
 import tqdm
+import pdb
 from typing import Iterable, Optional, Tuple, FrozenSet, Any
 import chex
 import distrax
 import pdb
 import flax
-import flax.linen as nn
-import flax.nnx as nnx
 from flax.training import checkpoints
 import jax
 import jax.numpy as jnp
@@ -28,46 +27,18 @@ from serl_launcher.utils.train_utils import _unpack, concat_batches
 from serl_launcher.utils.timer_utils import Timer
 from serl_launcher.utils.launcher import make_wandb_logger
 from serl_launcher.data.data_store import DynamicNextObsReplayBufferDataStore
-from pi0.src.openpi.models import model, pi0
+from pi0.src.openpi.models import model, pi0_nn as pi0
 from pi0.src.openpi.training.rl_cfg import rl_config
 
 
-class NNXToFlax(flax.linen.Module):
-    graphdef: Any
-    initial_state: Any
-    param_path: str = "params"
-
-    @nn.compact
-    def __call__(self, sample_rng, observations, *args, **kwargs):
-        # 使用 param_path 作为参数名称，确保参数嵌套正确
-        params = self.param(self.param_path, self._init_nnx_model, sample_rng, observations)
-        # 合并参数到 NNX 模型中
-        model = nnx.merge(self.graphdef, params)
-
-        # 调用模型，传入 sample_rng 和 observations
-        return model(sample_rng, observations, **kwargs)
-
-    def _init_nnx_model(self, rng, sample_rng, observations):
-        # rng 是 Flax 内部传递的 RNG，通常用于初始化参数的随机性
-        # sample_rng 是你传递给 _init_nnx_model 的样本 RNG
-        # 初始化 NNX 模型（仅在首次调用时执行）
-        model = nnx.merge(self.graphdef, self.initial_state)
-        model(sample_rng, observations)  # 触发参数初始化
-        graphdef, state = nnx.split(model)
-        return state
-
 def create_policy_with_lora(pretrained_policy_path = None):
     policy_config=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora")
-    rng = jax.random.key(FLAGS.seed)
-    _, model_rng = jax.random.split(rng)
-    policy_def = policy_config.create(model_rng)
-    freeze_filter = policy_config.get_freeze_filter()
+    policy_def = pi0.Pi0(config=policy_config)
     if pretrained_policy_path is not None:
         pretrained_actor_params = model.restore_params(pretrained_policy_path, dtype=jnp.float32)
     else:
         raise ValueError("pretrained_policy_path must be provided for post training")
-    return policy_def, pretrained_actor_params, freeze_filter
-
+    return policy_def, pretrained_actor_params
 
 
 class TestAgent(flax.struct.PyTreeNode):
@@ -100,7 +71,6 @@ class TestAgent(flax.struct.PyTreeNode):
     
     
     def policy_loss_fn(self, batch, params: Params, rng: PRNGKey):
-        """TD3 policy loss using minimum Q-value"""
         batch_size = batch["rewards"].shape[0]
         # Get policy actions
         rng, sample_rng = jax.random.split(rng)
@@ -196,18 +166,12 @@ class TestAgent(flax.struct.PyTreeNode):
         noise_clip: float = 0.1,
         policy_update_freq: int = 2,
         pretrained_actor_params: Optional[Params] = None,
-        freeze_filter = None,
         reward_bias: float = 0.0,
         **kwargs,
     ):
-        graphdef, initial_state = nnx.split(actor_def)
-        wrapped_model = NNXToFlax(
-        graphdef=graphdef,
-        initial_state=initial_state,
-        param_path="actor"
-    )
+
         networks = {
-            "actor": wrapped_model,
+            "actor": actor_def,
         }
         model_def = ModuleDict(networks)
         txs = {
@@ -221,51 +185,43 @@ class TestAgent(flax.struct.PyTreeNode):
             )["params"]
 
         ACTOR_PARAM_KEY = 'modules_actor' # <-- 这是 ModuleDict 生成的实际键名
-        INNER_ACTOR_KEY = 'actor' # NNXToFlax 创建的额外嵌套层
         if ACTOR_PARAM_KEY not in all_params:
             raise KeyError(f"'{ACTOR_PARAM_KEY}' key not found in all_params. Available keys: {list(all_params.keys())}")
-        if INNER_ACTOR_KEY not in all_params[ACTOR_PARAM_KEY]:
-            raise KeyError(f"'{INNER_ACTOR_KEY}' key not found in all_params['{ACTOR_PARAM_KEY}']. Available keys: {list(all_params[ACTOR_PARAM_KEY].keys())}")
-        
 
         if pretrained_actor_params is not None:
-            # 假设 freeze_filter 定义了 *哪些参数应该被替换* (例如 LoRA 参数) 并且 pretrained_actor_params 只包含这些参数, 所以不用管freeze_filter了
+            # 假设预训练时 freeze_filter 定义了 *哪些参数应该被替换*  并且 pretrained_actor_params 只包含这些参数, 所以不用管freeze_filter了
             # 注意：这要求 pretrained_actor_params 的键路径与 all_params 中的匹配
+            # 注意: paligemma 在预训练模型中 (self.PaliGemma = nnx.Dict(llm=llm, img=img)), 而此时的模型是展平的 img 和 llm
             try:
                 # 获取实际要更新的参数字典
-                target_actor_params = all_params[ACTOR_PARAM_KEY][INNER_ACTOR_KEY]
+                target_actor_params = all_params[ACTOR_PARAM_KEY]
                 # 现在遍历 pretrained_actor_params 并尝试更新 target_actor_params
-                # 注意：target_actor_params 的结构可能还是嵌套的，例如
-                # {'PaliGemma': {'params': {'lora_a': ..., 'lora_b': ...}}, ...}
-                # 而 pretrained_actor_params 是
-                # {'PaliGemma': {'lora_a': ..., 'lora_b': ...}, ...}
-                # 需要匹配这种结构差异
                 
                 for module_name, module_pretrained_params in pretrained_actor_params.items():
-                    # module_name 例如 'PaliGemma'
-                    # module_pretrained_params 例如 {'lora_a': array, 'lora_b': array}
+                    # module_name 例如 'PaliGemma', 'state_proj', 'action_in_proj' 等等
+
                     if module_name in target_actor_params:
-                        target_module = target_actor_params[module_name] # 例如 {'params': {...}}
-                        # 假设 target_module 有一个 'params' 子字典来存放实际参数, 在NNXToFlax里没有, 但别的构造可能有
-                        if 'params' in target_module and isinstance(target_module['params'], dict):
-                            # 如果目标有 'params' 子字典，则再深入更新其内容
-                            params_subdict = target_module['params']
-                            for param_name, param_value in module_pretrained_params.items():
-                                if param_name in params_subdict:
-                                    params_subdict[param_name] = param_value
-                                    print(f"Loaded pretrained param: {module_name}/params/{param_name}")
-                                else:
-                                    print(f"Warning: Pretrained param key '{param_name}' not found under '{module_name}/params'. Skipping. Available: {list(params_subdict.keys())}")
-                        else:
-                            # 如果目标模块没有 'params' 层 ,直接尝试匹配顶层键
-                            for param_name, param_value in module_pretrained_params.items():
-                                if param_name in target_module:
-                                    print(target_module[param_name])
-                                    pdb.set_trace()
-                                    target_module[param_name] = param_value
-                                    print(f"Loaded pretrained param: {module_name}/{param_name}")
-                                else:
-                                    print(f"Warning: Pretrained param key '{param_name}' not found under '{module_name}'. Skipping. Available: {list(target_module.keys())}")
+                        target_module = target_actor_params[module_name] 
+                            # 直接尝试匹配顶层键
+                        for param_name, param_value in module_pretrained_params.items():
+                            if param_name in target_module:
+                                target_module[param_name] = param_value
+                                print(f"Loaded pretrained param: {module_name}/{param_name}")
+                            else:
+                                print(f"Warning: Pretrained param key '{param_name}' not found under '{module_name}'. Skipping. Available: {list(target_module.keys())}")
+                    elif module_name == "PaliGemma":
+                        # 特例处理 PaliGemma，因为它包含了 img 和 llm
+                        if "img" in target_actor_params and "llm" in target_actor_params:
+                            for submodule_name, submodule_pretrained_params in module_pretrained_params.items():
+                                if submodule_name in target_actor_params:
+                                    target_module = target_actor_params[submodule_name]
+                                    for param_name, param_value in submodule_pretrained_params.items():
+                                        if param_name in target_module:
+                                            target_module[param_name] = param_value
+                                            print(f"Loaded pretrained param: {submodule_name}/{param_name}")
+                                        else:
+                                            print(f"Warning: Pretrained param key '{param_name}' not found under '{submodule_name}'. Skipping. Available: {list(target_module.keys())}")
+
                     else:
                         print(f"Warning: Pretrained module key '{module_name}' not found in initialized actor params. Skipping. Available: {list(target_actor_params.keys())}")
                         
@@ -303,13 +259,12 @@ class TestAgent(flax.struct.PyTreeNode):
         pretrained_policy_path: Optional[str] = None,
         **kwargs,
     ):
-        policy_def, pretrained_actor_params, freeze_filter = create_policy_with_lora(pretrained_policy_path=pretrained_policy_path)
+        policy_def, pretrained_actor_params = create_policy_with_lora(pretrained_policy_path=pretrained_policy_path)
         agent = cls.create(
             rng,
             observations,
             actor_def=policy_def,
             pretrained_actor_params=pretrained_actor_params,
-            freeze_filter=freeze_filter,
             **kwargs,
         )
         return agent

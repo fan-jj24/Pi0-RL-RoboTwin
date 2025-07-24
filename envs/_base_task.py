@@ -1561,7 +1561,7 @@ class Base_Task(gym.Env):
             self.eval_video_ffmpeg.stdin.write(self.now_obs["observation"]["head_camera"]["rgb"].tobytes())
 
         self.take_action_cnt += 1
-        print(f"step: \033[92m{self.take_action_cnt} / {self.step_lim}\033[0m", end="\r")
+        # print(f"step: \033[92m{self.take_action_cnt} / {self.step_lim}\033[0m", end="\r")
 
         self._update_render()
         if self.render_freq:

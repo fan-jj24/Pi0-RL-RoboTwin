@@ -7,7 +7,8 @@ import flax.traverse_util as traverse_util
 import jax
 import numpy as np
 from openpi_client import image_tools
-
+import jax.numpy as jnp
+from typing import Union
 from openpi.models import tokenizer as _tokenizer
 from openpi.shared import array_typing as at
 from openpi.shared import normalize as _normalize
@@ -402,16 +403,24 @@ def apply_tree(tree: at.PyTree[T],
 
     return unflatten_dict({k: transform(k, v) for k, v in tree.items()})
 
-
-def pad_to_dim(x: np.ndarray, target_dim: int, axis: int = -1) -> np.ndarray:
-    """Pad an array to the target dimension with zeros along the specified axis."""
-    current_dim = x.shape[axis]
-    if current_dim < target_dim:
+def pad_to_dim(x: Union[np.ndarray, jnp.ndarray], target_dim: int, axis: int = -1) -> Union[np.ndarray, jnp.ndarray]:
+    if isinstance(x, jnp.ndarray):
+        # JAX 分支
+        lib = jnp
+        current_dim = x.shape[axis]
+        pad_needed = max(0, target_dim - current_dim)
         pad_width = [(0, 0)] * len(x.shape)
-        pad_width[axis] = (0, target_dim - current_dim)
-        return np.pad(x, pad_width)
-    return x
-
+        pad_width[axis] = (0, pad_needed)
+        return lib.pad(x, pad_width) if pad_needed > 0 else x
+    else:
+        # NumPy 分支
+        lib = np
+        current_dim = x.shape[axis]
+        if current_dim < target_dim:
+            pad_width = [(0, 0)] * len(x.shape)
+            pad_width[axis] = (0, target_dim - current_dim)
+            return lib.pad(x, pad_width)
+        return x
 
 def make_bool_mask(*dims: int) -> tuple[bool, ...]:
     """Make a boolean mask for the given dimensions.

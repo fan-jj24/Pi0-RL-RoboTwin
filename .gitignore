@@ -1,3 +1,2 @@
-/assets/
-/checkpoints/
-/demo_data/*.pkl
+/assets/*
+/eval_result/*

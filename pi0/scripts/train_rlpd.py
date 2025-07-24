@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import os
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
 import glob
 import time
 import jax
@@ -7,23 +9,22 @@ import numpy as np
 import tqdm
 from absl import app, flags
 from flax.training import checkpoints
-import os
 import copy
 import pickle as pkl
 from natsort import natsorted
-from serl_launcher.agents.td3_hybrid_dual import TD3AgentHybridDualArm
-from serl_launcher.utils.timer_utils import Timer
-from serl_launcher.utils.train_utils import concat_batches
+from datetime import datetime
+
 from agentlace.trainer import TrainerServer, TrainerClient
 from agentlace.data.data_store import QueuedDataStore
-from serl_launcher.utils.launcher import make_td3_pixel_agent_hybrid_dual_arm, make_trainer_config, make_wandb_logger
+
+from serl_launcher.utils.launcher import make_rl_agent_hybrid_dual_arm, make_trainer_config, make_wandb_logger
 from serl_launcher.data.data_store import DynamicNextObsReplayBufferDataStore
-from pi0.src.openpi.training.rl_cfg import create_pi0_base_aloha_rl_lora_config, RoboTwinEnv, rl_config
-import os
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
+from serl_launcher.utils.timer_utils import Timer
+from serl_launcher.utils.train_utils import concat_batches
+from serl_launcher.agents.RLAgent_dual import RLAgent
+from pi0.src.openpi.training.rl_cfg import rl_config
 
-config = create_pi0_base_aloha_rl_lora_config()
-
+config = rl_config()
 FLAGS = flags.FLAGS
 flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_boolean("learner", False, "Whether this is a learner.")
@@ -31,19 +32,27 @@ flags.DEFINE_boolean("actor", False, "Whether this is an actor.")
 flags.DEFINE_string("ip", "localhost", "IP address of the learner.")
 flags.DEFINE_multi_string("demo_path", None, "Path to the demo data.")
 flags.DEFINE_string("checkpoint_path", None, "Path to save checkpoints.")
-flags.DEFINE_boolean("save_video", False, "Save video.")
-flags.DEFINE_boolean("debug", False, "Debug mode.")  # debug mode will disable wandb logging
+flags.DEFINE_boolean("debug", False, "Debug mode.")  
+
+def print_green(x):
+    return print("\033[92m {}\033[00m".format(x))
+def print_red(x):
+    return print("\033[91m {}\033[00m".format(x))
+def print_yellow(x):
+    return print("\033[93m {}\033[00m".format(x))
+def print_blue(x):
+    return print("\033[94m {}\033[00m".format(x))
+
 devices = jax.local_devices()
 num_devices = len(devices)
 sharding = jax.sharding.PositionalSharding(devices)
-def print_green(x):
-    return print("\033[92m {}\033[00m".format(x))
-
 
 ##############################################################################
 
 
 def actor(agent, data_store, intvn_data_store, sampling_rng):
+    from pi0.src.openpi.training.rl_cfg import RoboTwinEnv
+    output_file = open("policy_results.log", "a")
     
     buffer_dir = os.path.join(FLAGS.checkpoint_path, "buffer")
     buffer_files = natsorted(glob.glob(os.path.join(buffer_dir, "transitions_*.pkl")))
@@ -75,16 +84,11 @@ def actor(agent, data_store, intvn_data_store, sampling_rng):
 
     transitions = []
     # demo_transitions = []
+    
     env = RoboTwinEnv()
-    obs, task_name, now_seed = env.reset()
-    done = False
-
+    obs, instruction, now_seed = env.reset()
     # training loop
     timer = Timer()
-    # running_return = 0.0
-    #already_intervened = False
-    #intervention_count = 0
-    #intervention_steps = 0
 
     pbar = tqdm.tqdm(range(start_step, config.max_steps), dynamic_ncols=True)
     for step in pbar:
@@ -93,6 +97,7 @@ def actor(agent, data_store, intvn_data_store, sampling_rng):
         with timer.context("sample_actions"):
             sampling_rng, key = jax.random.split(sampling_rng)
             actions = agent.sample_actions(
+                sample_rng = sampling_rng,
                 observations=jax.device_put(obs),
                 seed=key,
                 argmax=False,
@@ -101,30 +106,13 @@ def actor(agent, data_store, intvn_data_store, sampling_rng):
 
         # Step environment
         with timer.context("step_env"):
-
             next_obs, reward, done, info = env.step(actions)
-            # if "left" in info:
-            #     info.pop("left")
-            # if "right" in info:
-            #     info.pop("right")
-            '''
-            # override the action with the intervention action
-            if "intervene_action" in info:
-                actions = info.pop("intervene_action")
-                intervention_steps += 1
-                if not already_intervened:
-                    intervention_count += 1
-                already_intervened = True
-            else:
-                already_intervened = False'''
 
-            # running_return += reward
             transition = dict(
                 observations=obs,
                 actions=actions,
                 next_observations=next_obs,
                 rewards=reward,
-                #masks=1.0 - done,
                 dones=done,
             )
             data_store.insert(transition)
@@ -135,20 +123,16 @@ def actor(agent, data_store, intvn_data_store, sampling_rng):
 
             obs = next_obs
             if done:
-                #info["episode"]["intervention_count"] = intervention_count
-                #info["episode"]["intervention_steps"] = intervention_steps
                 stats = {"environment": info}  # send stats to the learner to log
                 client.request("send-stats", stats)
-                # pbar.set_description(f"last return: {running_return}")
-                # running_return = 0.0
-                #intervention_count = 0
-                #intervention_steps = 0
-                #already_intervened = False
                 client.update()
-                obs, task_name, now_seed = env.reset()
+                result_msg = f"reward: {reward}, task_name: {instruction}, seed: {now_seed}"
+                output_file.write(f"{datetime.now()}: {result_msg}\n")  
+                output_file.flush() 
+                env.close_env(env.task)
+                obs, instruction, now_seed = env.reset()
 
         if step > 0 and config.buffer_period and step % config.buffer_period == 0:
-            # dump to pickle file
             buffer_path = os.path.join(FLAGS.checkpoint_path, "buffer")
             #demo_buffer_path = os.path.join(FLAGS.checkpoint_path, "demo_buffer")
             if not os.path.exists(buffer_path):
@@ -158,14 +142,11 @@ def actor(agent, data_store, intvn_data_store, sampling_rng):
             with open(os.path.join(buffer_path, f"transitions_{step}.pkl"), "wb") as f:
                 pkl.dump(transitions, f)
                 transitions = []
-            # with open(
-                # os.path.join(demo_buffer_path, f"transitions_{step}.pkl"), "wb"
-            # ) as f:
+            # with open(os.path.join(demo_buffer_path, f"transitions_{step}.pkl"), "wb") as f:
                 # pkl.dump(demo_transitions, f)
                 # demo_transitions = []
 
         timer.tock("total")
-
         if step % config.log_period == 0:
             stats = {"timer": timer.get_average_times()}
             client.request("send-stats", stats)
@@ -218,7 +199,7 @@ def learner(rng, agent, replay_buffer, demo_buffer, wandb_logger=None):
 
     # send the initial network to the actor
     server.publish_network(agent.state.params)
-    print_green("sent initial network to actor")
+    print_red("sent initial network to actor")
 
     # 50/50 sampling from RLPD, half from demo and half from online experience
     replay_iterator = replay_buffer.get_iterator(
@@ -244,13 +225,11 @@ def learner(rng, agent, replay_buffer, demo_buffer, wandb_logger=None):
     ):  
         # run n critic updates and 1 actor update
         # the actor update is much more expensive, we do it less frequently and dont combine it with critic updates
-        for critic_step in range(config.cta_ratio):
-            with timer.context("sample_replay_buffer"):
+        with timer.context("train_critics"):
+            for critic_step in range(config.cta_ratio):
                 batch = next(replay_iterator)
                 demo_batch = next(demo_iterator)
                 batch = concat_batches(batch, demo_batch, axis=0)
-
-            with timer.context("train_critics"):
                 agent, critics_info = agent.update(
                     batch,
                     networks_to_update=train_critic_networks_to_update,
@@ -258,8 +237,7 @@ def learner(rng, agent, replay_buffer, demo_buffer, wandb_logger=None):
                 if critic_step % config.log_period == 0 and wandb_logger:
                     wandb_logger.log(critics_info, step = critic_step * (step + 1))
 
-
-        with timer.context("train"):
+        with timer.context("train_actor"):
             batch = next(replay_iterator)
             demo_batch = next(demo_iterator)
             batch = concat_batches(batch, demo_batch, axis=0)
@@ -268,48 +246,45 @@ def learner(rng, agent, replay_buffer, demo_buffer, wandb_logger=None):
                 networks_to_update=train_actor_networks_to_update,
             )
 
-
+        if step % config.log_period == 0 and wandb_logger:
+            wandb_logger.log(update_info, step=step)
+            wandb_logger.log({"timer": timer.get_average_times()}, step=step)
+    
         # publish the updated network
         if step > 0 and step % (config.steps_per_update) == 0:
             agent = jax.block_until_ready(agent)
             server.publish_network(agent.state.params)
-            print_green(f"published network at step {step}")
+            print_red(f"published network at step {step}")
 
-        if step % config.log_period == 0 and wandb_logger:
-            wandb_logger.log(update_info, step=step)
-            wandb_logger.log({"timer": timer.get_average_times()}, step=step)
-
-        if (
-            step > 0
-            and config.checkpoint_period
-            and step % config.checkpoint_period == 0
-        ):
-            checkpoints.save_checkpoint(
-                os.path.abspath(FLAGS.checkpoint_path), agent.state, step=step, keep=100
-            )
+        if step > 0 and step % config.checkpoint_period == 0:
+            checkpoints.save_checkpoint(os.path.abspath(FLAGS.checkpoint_path), agent.state, step=step, keep=5)
 
 
 ##############################################################################
 
 def main(_):
-    TASK_ENV = rl_config()
     assert config.batch_size % num_devices == 0
     # seed
     rng = jax.random.PRNGKey(FLAGS.seed)
     rng, sampling_rng = jax.random.split(rng)    
 
-    sample_obs=TASK_ENV.observation_space.sample()
-    sample_action=TASK_ENV.action_space.sample()
+    sample_obs=config.observation_space.sample()
+    sample_action=config.action_space.sample()
     sample_obs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], sample_obs)
     sample_action = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], sample_action)
 
-    agent: TD3AgentHybridDualArm = make_td3_pixel_agent_hybrid_dual_arm(
+    agent: RLAgent = make_rl_agent_hybrid_dual_arm(
         seed=FLAGS.seed,
         sample_obs=sample_obs,
         sample_action=sample_action,
-        image_keys=config.image_keys,
-        #encoder_type=config.encoder_type,
         discount=config.discount,
+        soft_target_update_rate=config.soft_target_update_rate,
+        target_policy_noise=config.target_policy_noise,
+        noise_clip=config.noise_clip,
+        image_keys=config.image_keys,
+        augmentation_function=config.augmentation_function,
+        pretrained_policy_path=config.pretrained_policy_path,
+        reward_bias=config.reward_bias,
     )
     # replicate agent across devices
     # need the jnp.array to avoid a bug where device_put doesn't recognize primitives
@@ -334,15 +309,14 @@ def main(_):
 
     def create_replay_buffer_and_wandb_logger():
         replay_buffer = DynamicNextObsReplayBufferDataStore(
-            TASK_ENV.observation_space,
-            TASK_ENV.action_space,
+            config.observation_space,
+            config.action_space,
             capacity=config.replay_buffer_capacity,
-            # image_keys=config.image_keys,
         )
         # set up wandb and logging
         wandb_logger = make_wandb_logger(
             project="pi0-serl",
-            description=FLAGS.exp_name,
+            description="serl pi0 in robotwin",
             debug=FLAGS.debug,
         )
         return replay_buffer, wandb_logger
@@ -351,10 +325,9 @@ def main(_):
         sampling_rng = jax.device_put(sampling_rng, device=sharding.replicate())
         replay_buffer, wandb_logger = create_replay_buffer_and_wandb_logger()
         demo_buffer = DynamicNextObsReplayBufferDataStore(
-            TASK_ENV.observation_space,
-            TASK_ENV.action_space,
+            config.observation_space,
+            config.action_space,
             capacity=config.replay_buffer_capacity,
-            # image_keys=config.image_keys,
         )
 
         assert FLAGS.demo_path is not None
@@ -366,31 +339,21 @@ def main(_):
         print_green(f"demo buffer size: {len(demo_buffer)}")
         print_green(f"online buffer size: {len(replay_buffer)}")
 
-        if FLAGS.checkpoint_path is not None and os.path.exists(
-            os.path.join(FLAGS.checkpoint_path, "buffer")
-        ):
+        if FLAGS.checkpoint_path is not None and os.path.exists(os.path.join(FLAGS.checkpoint_path, "buffer")):
             for file in glob.glob(os.path.join(FLAGS.checkpoint_path, "buffer/*.pkl")):
                 with open(file, "rb") as f:
                     transitions = pkl.load(f)
                     for transition in transitions:
                         replay_buffer.insert(transition)
-            print_green(
-                f"Loaded previous buffer data. Replay buffer size: {len(replay_buffer)}"
-            )
+            print_green(f"Loaded previous buffer data. Replay buffer size: {len(replay_buffer)}")
 
-        if FLAGS.checkpoint_path is not None and os.path.exists(
-            os.path.join(FLAGS.checkpoint_path, "demo_buffer")
-        ):
-            for file in glob.glob(
-                os.path.join(FLAGS.checkpoint_path, "demo_buffer/*.pkl")
-            ):
+        if FLAGS.checkpoint_path is not None and os.path.exists(os.path.join(FLAGS.checkpoint_path, "demo_buffer")):
+            for file in glob.glob(os.path.join(FLAGS.checkpoint_path, "demo_buffer/*.pkl")):
                 with open(file, "rb") as f:
                     transitions = pkl.load(f)
                     for transition in transitions:
                         demo_buffer.insert(transition)
-            print_green(
-                f"Loaded previous demo buffer data. Demo buffer size: {len(demo_buffer)}"
-            )
+            print_green(f"Loaded previous demo buffer data. Demo buffer size: {len(demo_buffer)}")
 
         # learner loop
         print_green("starting learner loop")

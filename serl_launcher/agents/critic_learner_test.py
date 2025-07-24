@@ -1,19 +1,40 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_CPP_MIN_VLOG_LEVEL'] = '0'
+os.environ['CUDA_LAUNCH_BLOCKING'] = '0'
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False" 
 from functools import partial
+import glob
+import pdb
+import pickle as pkl
 from typing import Iterable, Optional, Tuple, FrozenSet
 import chex
 import distrax
 import flax
 import flax.linen as nn
+from flax.training import checkpoints
 import jax
 import jax.numpy as jnp
 import numpy as np
+from absl import app, flags
+import tqdm
+
+from serl_launcher.utils.timer_utils import Timer
+from serl_launcher.utils.train_utils import concat_batches, _unpack
 from serl_launcher.common.common import JaxRLTrainState, ModuleDict, nonpytree_field
 from serl_launcher.common.encoding import EncodingWrapper, SmallTransformerActionEncoder, SmallTransformerTextEncoder
 from serl_launcher.common.optimizers import make_optimizer
 from serl_launcher.common.typing import Batch, Data, Params, PRNGKey
-from serl_launcher.utils.train_utils import _unpack
 from serl_launcher.networks.cross_att import CrossAttentiveCritic
 from serl_launcher.vision.convernext import ConvNeXtEncoder
+from serl_launcher.utils.launcher import make_wandb_logger
+from serl_launcher.data.data_store import DynamicNextObsReplayBufferDataStore
+from pi0.src.openpi.training.rl_cfg import rl_config
+
+FLAGS = flags.FLAGS
+flags.DEFINE_multi_string("demo_path", "demo_data/15_demos_2025-07-22_11-37-30.pkl", "Path to the demo data.")
+flags.DEFINE_integer("seed", 42, "Random seed.")
+flags.DEFINE_string("checkpoint_path", "/home/anker/robotwin/Pi0-RL-RoboTwin/checkpoints", "Path to save checkpoints.")
 
 class TestAgent(flax.struct.PyTreeNode):
 
@@ -174,7 +195,7 @@ class TestAgent(flax.struct.PyTreeNode):
             critic=[observations, actions],
             method=None,
         )["params"]
-
+        
         rng, create_rng = jax.random.split(rng)
         state = JaxRLTrainState.create(
             apply_fn=model_def.apply,
@@ -246,20 +267,6 @@ class TestAgent(flax.struct.PyTreeNode):
             
         return agent
     
-
-
-import os
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False" 
-from flax.training import checkpoints
-from absl import app, flags
-import tqdm
-from serl_launcher.utils.timer_utils import Timer
-from serl_launcher.utils.train_utils import concat_batches
-
-FLAGS = flags.FLAGS
-flags.DEFINE_multi_string("demo_path", "demo_data/15_demos_2025-07-22_11-37-30.pkl", "Path to the demo data.")
-flags.DEFINE_integer("seed", 42, "Random seed.")
-flags.DEFINE_string("checkpoint_path", "/home/anker/robotwin/Pi0-RL-RoboTwin/checkpoints", "Path to save checkpoints.")
 
 
 def learner(agent, replay_buffer, demo_buffer, wandb_logger=None):
@@ -336,12 +343,6 @@ def make_test_agent(
     )
     return agent
 
-import glob
-import pdb
-import pickle as pkl
-from pi0.src.openpi.training.rl_cfg import rl_config
-from serl_launcher.utils.launcher import make_wandb_logger
-from serl_launcher.data.data_store import DynamicNextObsReplayBufferDataStore
 
 def main(_):
     

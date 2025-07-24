@@ -1,14 +1,11 @@
 # !/usr/bin/env python3
-
 import jax
-from jax import nn
 import jax.numpy as jnp
-
+from typing import Iterable, Optional
 from agentlace.trainer import TrainerConfig
-
 from serl_launcher.common.typing import Batch, PRNGKey
 from serl_launcher.common.wandb import WandBLogger
-from serl_launcher.agents.td3_hybrid_dual import TD3AgentHybridDualArm
+from serl_launcher.agents.RLAgent_dual import RLAgent
 from serl_launcher.vision.data_augmentations import batched_random_crop
 
 ##############################################################################
@@ -80,27 +77,33 @@ def make_wandb_logger(
     return wandb_logger
 
 
-def make_td3_pixel_agent_hybrid_dual_arm(
+def make_rl_agent_hybrid_dual_arm(
     seed,
     sample_obs,
     sample_action,
-    image_keys,
-    encoder_type="resnet",
-    reward_bias=0.0,
     discount=0.95,
-    pretrained_policy_path = None,
+    soft_target_update_rate: float = 0.005,
+    target_policy_noise: float = 0.1,
+    noise_clip: float = 0.1,
+    image_keys: Iterable[str] = ("image",),
+    augmentation_function: Optional[callable] = None,
+    pretrained_policy_path: Optional[str] = None,
+    reward_bias: float = 0.0,
+
 ):
-    agent = TD3AgentHybridDualArm.create_pixels(
+    agent = RLAgent.create_pixels(
         jax.random.PRNGKey(seed),
         sample_obs,
         sample_action,
-        encoder_type=encoder_type,
-        use_proprio=True,
-        image_keys=image_keys,
-        discount=discount,
         critic_ensemble_size=2,
+        discount=discount,
+        soft_target_update_rate=soft_target_update_rate,
+        target_policy_noise=target_policy_noise,
+        noise_clip=noise_clip,
+        image_keys=image_keys,
+        # augmentation_function=make_batch_augmentation_func(image_keys),
+        augmentation_function=augmentation_function,
+        pretrained_policy_path=pretrained_policy_path,
         reward_bias=reward_bias,
-        #augmentation_function=make_batch_augmentation_func(image_keys),
-        pretrained_policy_path = pretrained_policy_path,
     )
     return agent

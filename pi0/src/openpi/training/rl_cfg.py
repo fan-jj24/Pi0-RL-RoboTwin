@@ -17,12 +17,12 @@ import logging
 logging.getLogger("curobo").setLevel(logging.ERROR)
 
 
-class rl_config():
+class rl_config:
     def __init__(self, action_chunk = 50):
         self.action_space = gym.spaces.Box(
             -np.pi, np.pi, shape=(action_chunk,14), dtype=np.float32  
         )
-        image_keys = ["base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"]
+        self.image_keys = ["base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"]
         self.observation_space = gym.spaces.Dict(
             {
                 "state": gym.spaces.Box(
@@ -31,10 +31,10 @@ class rl_config():
                     
                 "image": gym.spaces.Dict(
                     {key: gym.spaces.Box(0, 255, shape=(224, 224, 3), dtype=np.uint8) 
-                                for key in image_keys}
+                                for key in self.image_keys}
                 ),
                 "image_mask": gym.spaces.Dict(
-                    {key: gym.spaces.Box(0, 1, shape=(1,), dtype=np.bool_) for key in image_keys}
+                    {key: gym.spaces.Box(0, 1, shape=(1,), dtype=np.bool_) for key in self.image_keys}
                 ),
                 "tokenized_prompt": gym.spaces.Box(
                     0, 257151, shape = (48,), dtype=np.int32
@@ -45,6 +45,24 @@ class rl_config():
             }
         )
 
+        self.batch_size = 32
+        self.discount = 0.95
+        self.soft_target_update_rate = 0.005
+        self.target_policy_noise = 0.1
+        self.noise_clip = 0.1
+        self.augmentation_function = None
+        self.pretrained_policy_path = "/home/anker/robotwin/RoboTwin/policy/pi0/checkpoints/pi0_base_aloha_robotwin_lora/pi0_stack_300/30000/params"
+        self.reward_bias = 0.0
+
+        self.replay_buffer_capacity = 20000
+
+        self.max_steps = 1000000
+        self.buffer_period = 100
+        self.log_period = 10
+        self.training_starts = 100
+        self.cta_ratio = 40 # pi0 1 its / 6s, critic 8its / 1s
+        self.steps_per_update = 50
+        self.checkpoint_period = 200
     
 def class_decorator(task_name):
     envs_module = importlib.import_module(f"envs.{task_name}")
@@ -97,7 +115,7 @@ class RoboTwinEnv():
 
         self.args["left_embodiment_config"] = get_embodiment_config(self.args["left_robot_file"])
         self.args["right_embodiment_config"] = get_embodiment_config(self.args["right_robot_file"])
-
+        self.args["save_video"] = False
         if norm_stats is not None:
             self.input_transform = Normalize(norm_stats, use_quantiles=False)
             self.output_transform = Unnormalize(norm_stats, use_quantiles=False)
@@ -106,14 +124,14 @@ class RoboTwinEnv():
         
         self.delta_action_mask = make_bool_mask(6, -1, 6, -1)
         self.tokenizer = tokenizer.PaligemmaTokenizer(48)
-        
+    
         
     def close_env(self, task):
         task.close_env(clear_cache = True)
         if self.args["render_freq"]:
             task.viewer.close()
 
-    def reset(self, task_name = None, mode = None, now_seed = random.randint(2000, 10000), max_seed = 100000):
+    def reset(self, task_name = None, mode = None, save_video = False, now_seed = random.randint(2000, 10000), max_seed = 100000):
         if task_name is None:
             task_name = np.random.choice(self.task_name)
         task = class_decorator(task_name)
@@ -137,7 +155,6 @@ class RoboTwinEnv():
                 now_seed += 1
                 continue
 
-
             if mode != "demo" and (not s1 or not s2):
                 if mode is not None:
                     raise ValueError("mode must be 'demo' or NOT set")
@@ -152,7 +169,9 @@ class RoboTwinEnv():
                         self.mode_flag = "success"
                     else:
                         self.mode_flag = "fail"
-
+                else:
+                    self.args["eval_mode"] = True
+                    self.args["save_video"] = save_video
                 self.task.setup_demo(now_ep_num=0, seed=now_seed, is_test=False, **self.args)
                 episode_info_list = [episode_info["info"]]
                 results = generate_episode_descriptions(self.args["task_name"], episode_info_list, max_seed)
@@ -161,28 +180,26 @@ class RoboTwinEnv():
                 self.tokens, self.token_masks = self.tokenizer.tokenize(instruction)
                 observation = self.input(self.get_observation())
 
-                return observation, task_name, now_seed
+                return observation, instruction, now_seed
         
     def step(self, actions):
         actions = pad_to_dim(actions, 32)
         observation = self.input(self.get_observation())
         state = observation["state"]
+        state = pad_to_dim(state, 32)
         output = self.output_transform({
             "state": state,
             "actions": actions
         })
-        state, actions = output["state"], output["actions"]
-        actions = np.asarray(actions[:, :14])
+        state, actions = np.asarray(output["state"][:14]),  np.asarray(output["actions"][:, :14])
         actions[..., :14] += np.expand_dims(np.where(self.delta_action_mask, state[..., :14], 0), axis=-2)
-
         for action in actions:
             self.task.take_action(action)
-
+            if self.args["save_video"]:
+                self.task.get_obs() # to update the video window
         next_observation = self.input(self.get_observation())
         done = True if self.task.eval_success or self.task.take_action_cnt >= self.task.step_lim else False
         reward = 1.0 if self.task.eval_success else 0.0
-        if done:
-            self.close_env(self.task)
         return next_observation, reward, done, {"success": reward}
 
     def get_observation(self):

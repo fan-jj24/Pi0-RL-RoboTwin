@@ -1,0 +1,7 @@
+2025-07-25 10:42:39.980829: reward: 0.0, task_name: Move red block to the center, then put green block on top., seed: 5217
+2025-07-25 10:43:35.459516: reward: 1.0, task_name: Place the light green bowl onto the bowl for holding liquid to form a stack., seed: 5217
+2025-07-25 10:44:41.604634: reward: 1.0, task_name: Position one the smooth bowl with glossy finish and stack two others on it., seed: 5217
+2025-07-25 10:45:27.592990: reward: 1.0, task_name: Move red block to the center, then put green block on top., seed: 5217
+2025-07-25 10:46:22.420033: reward: 1.0, task_name: Stack the light green bowl directly over the polished ceramic bowl light gray., seed: 5217
+2025-07-25 10:48:16.599253: reward: 0.0, task_name: Stack the first the light blue bowl with darkened rim, then the second, then the third., seed: 5219
+2025-07-25 15:17:11.186672: reward: 1.0, task_name: Place red block in the center, then stack green block on it., seed: 9066

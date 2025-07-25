@@ -1,10 +1,4 @@
-python pi0/scripts/train_rlpd.py "$@" \
+python pi0/scripts/actor.py "$@" \
     --actor \
     --checkpoint_path checkpoints/ \
-/assets/
-/checkpoints/*
-/envs/
-/eval_result/
-/code_gen/
-/description/
-/script/
+    --ip localhost \

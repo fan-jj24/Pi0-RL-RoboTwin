@@ -6,6 +6,7 @@ from agentlace.trainer import TrainerConfig
 from serl_launcher.common.typing import Batch, PRNGKey
 from serl_launcher.common.wandb import WandBLogger
 from serl_launcher.agents.RLAgent_dual import RLAgent
+from serl_launcher.agents.ActAgent import ActorAgent
 from serl_launcher.vision.data_augmentations import batched_random_crop
 
 ##############################################################################
@@ -105,5 +106,24 @@ def make_rl_agent_hybrid_dual_arm(
         augmentation_function=augmentation_function,
         pretrained_policy_path=pretrained_policy_path,
         reward_bias=reward_bias,
+    )
+    return agent
+
+def make_act_agent(
+    seed,
+    sample_obs,
+    sample_action,
+    target_policy_noise: float = 0.1,
+    noise_clip: float = 0.1,
+    pretrained_policy_path: Optional[str] = None,
+):
+    agent = ActorAgent.create_pixels(
+        jax.random.PRNGKey(seed),
+        sample_obs,
+        sample_action,
+        target_policy_noise=target_policy_noise,
+        noise_clip=noise_clip,
+        pretrained_policy_path=pretrained_policy_path,
+
     )
     return agent

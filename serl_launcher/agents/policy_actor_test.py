@@ -3,30 +3,43 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "False"
 from functools import partial
 import tqdm
 from typing import Iterable, Optional, Tuple, FrozenSet, Any
-import pdb
 import flax
 import jax
 import jax.numpy as jnp
 import numpy as np
+from pathlib import Path
+root_path = Path(__file__).resolve().parent.parent.parent
+import yaml
+import subprocess
+from datetime import datetime
+import pdb
 from absl import app, flags
 FLAGS = flags.FLAGS
-flags.DEFINE_multi_string("demo_path", "demo_data/15_demos_2025-07-22_11-37-30.pkl", "Path to the demo data.")
+flags.DEFINE_multi_string("demo_path", str(root_path / "demo_data" / "15_demos_2025-07-22_11-37-30.pkl"), "Path to the demo data.")
 flags.DEFINE_integer("seed", 42, "Random seed.")
-flags.DEFINE_string("checkpoint_path", "/home/anker/robotwin/Pi0-RL-RoboTwin/checkpoint/policy", "Path to save checkpoints.")
+flags.DEFINE_string("checkpoint_path", str(root_path / "checkpoints"), "Path to save checkpoints.")
+
+import sys
+sys.path.insert(0, str(root_path))
 from serl_launcher.common.common import JaxRLTrainState, ModuleDict, nonpytree_field
 from serl_launcher.common.typing import Batch, Data, Params, PRNGKey
+from serl_launcher.utils.parmas_utils import merge_lora_weights_in_tree
 from pi0.src.openpi.models import model, pi0_nn as pi0
 from pi0.src.openpi.training.rl_cfg import rl_config, RoboTwinEnv
 from pi0.src.openpi.shared import normalize
 
-
-def create_policy_with_lora(pretrained_policy_path = None):
-    policy_config=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora")
-    policy_def = pi0.Pi0(config=policy_config)
+def create_policy(pretrained_policy_path = None, lora = True):
+    if lora:
+        policy_config=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora")
+    else:
+        policy_config=pi0.Pi0Config(paligemma_variant="gemma_2b", action_expert_variant="gemma_300m")
     if pretrained_policy_path is not None:
         pretrained_actor_params = model.restore_params(pretrained_policy_path, dtype=jnp.float32)
+        if not lora:
+            pretrained_actor_params = merge_lora_weights_in_tree(pretrained_actor_params)
     else:
         raise ValueError("pretrained_policy_path must be provided for post training")
+    policy_def = pi0.Pi0(config=policy_config)
     return policy_def, pretrained_actor_params
 
 
@@ -106,46 +119,23 @@ class TestAgent(flax.struct.PyTreeNode):
             )["params"]
 
         ACTOR_PARAM_KEY = 'modules_actor' # <-- 这是 ModuleDict 生成的实际键名
-        if ACTOR_PARAM_KEY not in all_params:
-            raise KeyError(f"'{ACTOR_PARAM_KEY}' key not found in all_params. Available keys: {list(all_params.keys())}")
-
         if pretrained_actor_params is not None:
-            # 假设预训练时 freeze_filter 定义了 *哪些参数应该被替换*  并且 pretrained_actor_params 只包含这些参数, 所以不用管freeze_filter了
             # 注意：这要求 pretrained_actor_params 的键路径与 all_params 中的匹配
             # 注意: paligemma 在预训练模型中 (self.PaliGemma = nnx.Dict(llm=llm, img=img)), 而此时的模型是展平的 img 和 llm
             try:
-                # 获取实际要更新的参数字典
-                target_actor_params = all_params[ACTOR_PARAM_KEY]
-                # 现在遍历 pretrained_actor_params 并尝试更新 target_actor_params
-                
+                target_actor_params = all_params[ACTOR_PARAM_KEY]                
                 for module_name, module_pretrained_params in pretrained_actor_params.items():
                     # module_name 例如 'PaliGemma', 'state_proj', 'action_in_proj' 等等
-
-                    if module_name in target_actor_params:
-                        target_module = target_actor_params[module_name] 
-                            # 直接尝试匹配顶层键
-                        for param_name, param_value in module_pretrained_params.items():
-                            if param_name in target_module:
-                                target_module[param_name] = param_value
-                                print(f"Loaded pretrained param: {module_name}/{param_name}")
-                            else:
-                                print(f"Warning: Pretrained param key '{param_name}' not found under '{module_name}'. Skipping. Available: {list(target_module.keys())}")
-                    elif module_name == "PaliGemma":
-                        # 特例处理 PaliGemma，因为它包含了 img 和 llm
-                        if "img" in target_actor_params and "llm" in target_actor_params:
-                            for submodule_name, submodule_pretrained_params in module_pretrained_params.items():
-                                if submodule_name in target_actor_params:
-                                    target_module = target_actor_params[submodule_name]
-                                    for param_name, param_value in submodule_pretrained_params.items():
-                                        if param_name in target_module:
-                                            target_module[param_name] = param_value
-                                            print(f"Loaded pretrained param: {submodule_name}/{param_name}")
-                                        else:
-                                            print(f"Warning: Pretrained param key '{param_name}' not found under '{submodule_name}'. Skipping. Available: {list(target_module.keys())}")
-
+                    if module_name in target_actor_params:# 直接尝试匹配顶层键
+                        target_actor_params[module_name] = module_pretrained_params
+                        print(f"Loaded pretrained param: {module_name}")
+                    elif module_name == "PaliGemma":# 特例处理 PaliGemma，因为它包含了 img 和 llm
+                        for submodule_name, submodule_pretrained_params in module_pretrained_params.items():
+                            if submodule_name in target_actor_params:
+                                target_actor_params[submodule_name] = submodule_pretrained_params
+                                print(f"Loaded pretrained param: {submodule_name}")
                     else:
                         print(f"Warning: Pretrained module key '{module_name}' not found in initialized actor params. Skipping. Available: {list(target_actor_params.keys())}")
-                        
             except Exception as update_e:
                 print(f"Error updating params with pretrained ones: {update_e}")
                 raise update_e
@@ -178,7 +168,7 @@ class TestAgent(flax.struct.PyTreeNode):
         pretrained_policy_path: Optional[str] = None,
         **kwargs,
     ):
-        policy_def, pretrained_actor_params = create_policy_with_lora(pretrained_policy_path=pretrained_policy_path)
+        policy_def, pretrained_actor_params = create_policy(pretrained_policy_path=pretrained_policy_path, lora = False)
         agent = cls.create(
             rng,
             observations,
@@ -188,21 +178,16 @@ class TestAgent(flax.struct.PyTreeNode):
         )
         return agent
 
-from pathlib import Path
-import yaml
-import subprocess
-from datetime import datetime
-
 def actor(agent, sampling_rng):
-    output_file = open("policy_results.log", "a")
-    norm_stats_dir = "/home/anker/robotwin/RoboTwin/policy/pi0/assets/pi0_base_aloha_robotwin_lora/stack_50_8&stack_50_9&stack_50_10&stack_50_11&stack_50_12&stack_50_13&"
+    output_file = open(str(root_path / "eval_results" / "policy_results.log"), "a")
+    norm_stats_dir = str(root_path)
     norm_stats = normalize.load(norm_stats_dir)
     env = RoboTwinEnv(norm_stats=norm_stats)
-    save_dir = Path(f"eval_result")
+    save_dir = root_path / "eval_results"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     def get_camera_config(camera_type):
-        camera_config_path = "./task_config/_camera_config.yml"
+        camera_config_path = str(root_path / "task_config" / "_camera_config.yml")
 
         assert os.path.isfile(camera_config_path), "task config file is missing"
 
@@ -241,7 +226,7 @@ def actor(agent, sampling_rng):
                     "libx264",
                     "-crf",
                     "23",
-                    f"{video_save_dir}/episode{step + 10}.mp4",
+                    f"{video_save_dir}/episode{step + 50}.mp4",
                 ],
                 stdin=subprocess.PIPE,
             )
@@ -293,7 +278,7 @@ def main(_):
     agent: TestAgent = make_test_agent(
         seed=FLAGS.seed,
         sample_obs=sample_obs,
-        pretrained_policy_path = "/home/anker/robotwin/RoboTwin/policy/pi0/checkpoints/pi0_base_aloha_robotwin_lora/pi0_stack_300/30000/params",  
+        pretrained_policy_path = str(root_path / "pretrained_params" / "params_30000"),  
     )
     print("starting actor loop")
     actor(agent, sampling_rng)

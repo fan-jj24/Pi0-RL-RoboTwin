@@ -51,7 +51,6 @@ class rl_config:
         self.target_policy_noise = 0.1
         self.noise_clip = 0.1
         self.augmentation_function = None
-        self.pretrained_policy_path = "/home/anker/robotwin/RoboTwin/policy/pi0/checkpoints/pi0_base_aloha_robotwin_lora/pi0_stack_300/30000/params"
         self.reward_bias = 0.0
 
         self.replay_buffer_capacity = 20000
@@ -131,7 +130,7 @@ class RoboTwinEnv():
         if self.args["render_freq"]:
             task.viewer.close()
 
-    def reset(self, task_name = None, mode = None, save_video = False, now_seed = random.randint(2000, 10000), max_seed = 100000):
+    def reset(self, task_name = None, mode = None, save_video = False, now_seed = random.randint(2000, 10000), max_seed = 100000, strict = False):
         if task_name is None:
             task_name = np.random.choice(self.task_name)
         task = class_decorator(task_name)
@@ -155,13 +154,10 @@ class RoboTwinEnv():
                 now_seed += 1
                 continue
 
-            if mode != "demo" and (not s1 or not s2):
-                if mode is not None:
-                    raise ValueError("mode must be 'demo' or NOT set")
+            if (mode != "demo" or strict) and (not s1 or not s2):
                 now_seed += 1
                 continue
             else:
-                self.task = task
                 if mode == "demo":
                     self.args["save_demo"] = True
                     self.args["save_freq"] = 8
@@ -172,6 +168,7 @@ class RoboTwinEnv():
                 else:
                     self.args["eval_mode"] = True
                     self.args["save_video"] = save_video
+                self.task = task
                 self.task.setup_demo(now_ep_num=0, seed=now_seed, is_test=False, **self.args)
                 episode_info_list = [episode_info["info"]]
                 results = generate_episode_descriptions(self.args["task_name"], episode_info_list, max_seed)

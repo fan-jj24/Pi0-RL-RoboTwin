@@ -10,21 +10,27 @@ from serl_launcher.common.common import JaxRLTrainState, ModuleDict, nonpytree_f
 from serl_launcher.common.encoding import EncodingWrapper, SmallTransformerTextEncoder, SmallTransformerActionEncoder
 from serl_launcher.common.optimizers import make_optimizer
 from serl_launcher.common.typing import Batch, Data, Params, PRNGKey
-from serl_launcher.networks.actor_critic_nets import ensemblize
+from serl_launcher.networks.cross_att import ensemblize
 from serl_launcher.utils.train_utils import _unpack
 from serl_launcher.networks.cross_att import CrossAttentiveCritic
 from serl_launcher.vision.convernext import ConvNeXtEncoder
-from pi0.src.openpi.models import model, pi0
+from serl_launcher.utils.parmas_utils import merge_lora_weights_in_tree
+from pi0.src.openpi.models import model, pi0_nn as pi0
 
-def create_policy_with_lora(pretrained_policy_path = None):
-    policy_config=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora")
-    policy_def = pi0.Pi0(config=policy_config)
+
+def create_policy(pretrained_policy_path = None, lora = True):
+    if lora:
+        policy_config=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora")
+    else:
+        policy_config=pi0.Pi0Config(paligemma_variant="gemma_2b", action_expert_variant="gemma_300m")
     if pretrained_policy_path is not None:
         pretrained_actor_params = model.restore_params(pretrained_policy_path, dtype=jnp.float32)
+        if not lora:
+            pretrained_actor_params = merge_lora_weights_in_tree(pretrained_actor_params)
     else:
         raise ValueError("pretrained_policy_path must be provided for post training")
+    policy_def = pi0.Pi0(config=policy_config)
     return policy_def, pretrained_actor_params
-
 
 class RLAgent(flax.struct.PyTreeNode):
 
@@ -331,7 +337,7 @@ class RLAgent(flax.struct.PyTreeNode):
             mlp_use_layer_norm=True
         )
         # critic_def = ensemblize(critic_def, ensemble_size=critic_ensemble_size)(name="critic_ensemble")
-        policy_def, pretrained_actor_params = create_policy_with_lora(pretrained_policy_path=pretrained_policy_path)
+        policy_def, pretrained_actor_params = create_policy(pretrained_policy_path=pretrained_policy_path,  lora = False)
 
         agent = cls.create(
             rng,

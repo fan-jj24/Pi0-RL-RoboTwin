@@ -1,23 +1,13 @@
 from typing import Dict, Iterable, Optional, Tuple, Union
-import flax
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import pdb
 default_init = nn.initializers.xavier_uniform
 
 class EncodingWrapper(nn.Module):
-    """
-    Encodes observations into a single flat encoding, adding additional
-    functionality for adding proprioception and stopping the gradient.
-
-    Args:
-        encoder: The encoder network.
-        use_proprio: Whether to concatenate proprioception (after encoding).
-    """
 
     encoder: nn.Module
-    use_proprio: bool
+    use_proprio: bool = True
     image_keys: Iterable[str] = ("image",)
     fuse_proprio_images: bool = True
 

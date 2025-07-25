@@ -1,11 +1,23 @@
 import flax.linen as nn
-import jax
 import jax.numpy as jnp
 from typing import Callable, Optional, Sequence
 from serl_launcher.networks.mlp import MLP
 default_init = nn.initializers.xavier_uniform
-import pdb
 
+def ensemblize(cls, num_qs, out_axes=0):
+    class EnsembleModule(nn.Module):
+        @nn.compact
+        def __call__(self, *args, train=False, **kwargs):
+            ensemble = nn.vmap(
+                cls,
+                variable_axes={"params": 0},
+                split_rngs={"params": True, "dropout": True}, 
+                in_axes=None,
+                out_axes=out_axes,
+                axis_size=num_qs,
+            )
+            return ensemble()(*args, **kwargs)
+    return EnsembleModule
 
 class CrossAttentionBlock(nn.Module):
     num_heads: int

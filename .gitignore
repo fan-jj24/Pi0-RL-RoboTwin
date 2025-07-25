@@ -1,7 +1,7 @@
 /assets/
 /checkpoints/*
 /envs/
-/eval_result/
+/eval_results/
 /code_gen/
 /description/
 /script/

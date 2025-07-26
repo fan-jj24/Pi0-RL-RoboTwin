@@ -1,0 +1,10 @@
+/assets/
+/checkpoints/*
+/envs/
+/eval_results/
+/code_gen/
+/description/
+/script/
+/pretrained_params/
+/.vscode/
+/demo_data/
